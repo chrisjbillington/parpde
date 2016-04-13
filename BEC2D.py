@@ -15,7 +15,7 @@ class BEC2D(object):
             self.hbar = 1
             self.time_units = 'time units'
         else:
-            self.hbar = 1.054572e-34
+            self.hbar = 1.054571726e-34
             self.time_units = 's'
 
     def compute_mu(self, t, psi, H):
@@ -77,15 +77,14 @@ class BEC2D(object):
             convergence_calc = abs((mucalc - mu)/mu)
             time_per_step = (time.time() - start_time)/i if i else np.nan
 
-            output_log_dtype = [('step_number', int), ('t', float), ('mucalc', float),
+            output_log_dtype = [('step_number', int), ('mucalc', float),
                                 ('convergence', float), ('time_per_step', float)]
 
-            output_log_data = np.array((i, t, mucalc, convergence_calc, time_per_step), dtype=output_log_dtype)
+            output_log_data = np.array((i, mucalc, convergence_calc, time_per_step), dtype=output_log_dtype)
 
             if output_directory is not None:
                 hdf_output.save(psi, output_log_data)
             message =  ('step: %d'%i +
-                        '  t = {}'.format(format_float(t, units=self.time_units)) +
                         '  mucalc: ' + repr(mucalc) +
                         '  convergence: %E'%convergence_calc +
                         '  time per step: {}'.format(format_float(time_per_step, units='s')))
