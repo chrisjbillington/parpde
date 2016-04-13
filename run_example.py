@@ -18,11 +18,12 @@ def get_number_and_trap(rhomax, R):
 
 # Constants:
 pi = np.pi
-hbar = 1.054572e-34
-m = 86.909180526*1.660539e-27                 # 87Rb atomic mass
-c0 = 5.16e-51                                 # F=1 spin-independent interaction strength
-c2 = -2.39e-53                                # F=1 spin-dependent interaction strength
-g = c0 + c2                                   # Total self-interaction strength for single component in mF=-1 or +1
+hbar = 1.054571726e-34                        # Reduced Planck's constant
+a_0  = 5.29177209e-11                         # Bohr radius
+u    = 1.660539e-27                           # unified atomic mass unit
+m  = 86.909180*u                              # 87Rb atomic mass
+a  = 98.98*a_0                                # 87Rb |2,2> scattering length
+g  = 4*pi*hbar**2*a/m                         # 87Rb self interaction constant
 
 rhomax = 2.5e14 * 1e6                         # Desired peak condensate density
 R = 7.5e-6                                    # Desired condensate radius
@@ -86,7 +87,7 @@ if __name__ == '__main__':
     psi = np.sqrt(psi)
 
     # Find the groundstate:
-    psi = bec2d.find_groundstate(groundstate_system, H, mu, psi, relaxation_parameter=1.6, convergence=1e-13,
+    psi = bec2d.find_groundstate(groundstate_system, H, mu, psi, relaxation_parameter=1.7, convergence=1e-13,
                                  output_interval=100, output_directory='groundstate', convergence_check_interval=10)
 
     # psi is real so far, convert it to complex:
