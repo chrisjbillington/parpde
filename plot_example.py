@@ -5,7 +5,7 @@ from __future__ import division, print_function
 import os
 import numpy as np
 import matplotlib
-matplotlib.use('Agg')
+# matplotlib.use('Agg')
 import matplotlib.image
 pi = np.pi
 
@@ -28,10 +28,13 @@ def plot_sim(name):
     if not os.path.isdir(output_dir):
         os.mkdir(output_dir)
     for i, psi in enumerate(HDFOutput.iterframes(name)):
+        import matplotlib.pyplot as plt
+        plt.plot(np.abs(psi[128, :])**2)
+        plt.show()
         print(name, i)
         plot(output_dir, i, psi)
 
 if __name__ == '__main__':
     plot_sim('groundstate')
     plot_sim('smoothing')
-    plot_sim('evolution')
+    # plot_sim('evolution')

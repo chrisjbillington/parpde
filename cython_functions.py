@@ -18,4 +18,4 @@ if not os.path.exists(extension_name):
             os.chdir(current_folder)
     MPI.COMM_WORLD.Barrier()
 
-from _cython_functions import laplacian, SOR_step_interior, SOR_step_edges
+from _cython_functions import laplacian_edges, laplacian_interior, SOR_step_interior, SOR_step_edges

@@ -18,18 +18,172 @@ cdef extern from "complex.h":
      double cabs(double complex) nogil
 
 
+# Constants for central finite differences:
+DEF D_2ND_ORDER_1 = 1.0/5.0
+
+DEF D_4TH_ORDER_1 = 2.0/3.0
+DEF D_4TH_ORDER_2 = 1.0/12.0
+
+DEF D_6TH_ORDER_1 = 3.0/4.0
+DEF D_6TH_ORDER_2 = -3.0/20.0
+DEF D_6TH_ORDER_3 = 1.0/60.0
+
+DEF D2_2ND_ORDER_0 = -2.0
+DEF D2_2ND_ORDER_1 = 1.0
+
+DEF D2_4TH_ORDER_0 = -5.0/2.0
+DEF D2_4TH_ORDER_1 = 4.0/3.0
+DEF D2_4TH_ORDER_2 = -1.0/12.0
+
+DEF D2_6TH_ORDER_0 = -49.0/18.0
+DEF D2_6TH_ORDER_1 = 3.0/2.0
+DEF D2_6TH_ORDER_2 = -3.0/20.0
+DEF D2_6TH_ORDER_3 = 1.0/90.0
+
 @cython.initializedcheck(False)
 @cython.boundscheck(False)
 @cython.wraparound(False)
 @cython.nonecheck(False)
 @cython.cdivision(True)
-cdef inline void _laplacian(double_or_complex [:, :] psi, double dx, double dy, double_or_complex [:, :] out) nogil:
-    """Compute the laplacian of the array psi using finite differences. Assumes zero boundary conditions."""
+cdef inline void iter_edges(int * i, int * j, int nx, int ny, int order) nogil:
+    """Increment i and j so as to iterate over the points within order/2 of
+    the edge of the array. Caller is responsible for not calling any more when
+    i = nx - 1 and j = ny - 1"""
+    cdef int npts = order // 2
+    if i[0] < npts:
+        if j[0] < ny - 1:
+            j[0] += 1
+        else:
+            i[0] += 1
+            j[0] = 0
+    elif i[0] < nx - npts:
+        if j[0] < npts - 1:
+            j[0] += 1
+        elif j[0] == npts - 1:
+            j[0] = ny - npts
+        elif j[0] < ny - 1:
+            j[0] += 1
+        else:
+            j[0] = 0
+            i[0] += 1
+    elif j[0] < ny - 1:
+        j[0] += 1
+    else:
+        i[0] += 1
+        j[0] = 0
+
+
+@cython.initializedcheck(False)
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+@cython.cdivision(True)
+cdef inline double_or_complex _grad2x_single_point_interior(
+    int i, int j, double_or_complex [:, :] psi, double over_dx2, int order, int hollow) nogil:
+    """Compute the second x derivative at a single point i, j. No bounds
+    checking is performed, so one must be sure that i is at least order/2 away
+    fromt the edges. 1/dx^2 must be provided. If "hollow" is true, the central
+    point is excluded from the calculation."""
+    cdef double_or_complex Lx
+    Lx = 0
+    if order == 2:
+        if not hollow:
+            # Central point:
+            Lx = D2_2ND_ORDER_0 * psi[i, j]
+        # Nearest neighbor:
+        Lx += D2_2ND_ORDER_1 * (psi[i-1, j] + psi[i+1, j])
+    elif order == 4:
+        if not hollow:
+            # Central point:
+            Lx = D2_4TH_ORDER_0 * psi[i, j]
+        # Nearest neighbor:
+        Lx += D2_4TH_ORDER_1 * (psi[i-1, j] + psi[i+1, j])
+        # Next nearest neighbor:
+        Lx += D2_4TH_ORDER_2 * (psi[i-2, j] + psi[i+2, j])
+    elif order == 6:
+        if not hollow:
+            # Central point:
+            Lx = D2_6TH_ORDER_0 * psi[i, j]
+        # Nearest neighbor:
+        Lx += D2_6TH_ORDER_1 * (psi[i-1, j] +  psi[i+1, j])
+        # Next nearest neighbor:
+        Lx += D2_6TH_ORDER_2 * (psi[i-2, j] + psi[i+2, j])
+        # Next next nearest neighbor:
+        Lx += D2_6TH_ORDER_3 * (psi[i-3, j] + psi[i+3, j])
+    return Lx * over_dx2
+
+
+@cython.initializedcheck(False)
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+@cython.cdivision(True)
+cdef inline double_or_complex _grad2y_single_point_interior(
+    int i, int j, double_or_complex [:, :] psi, double over_dy2, int order, int hollow) nogil:
+    """Compute the second y derivative at a single point i, j. No bounds
+    checking is performed, so one must be sure that j is at least order/2 away
+    fromt the edges. 1/dy^2 must be provided. If "hollow" is true, the central
+    point is excluded from the calculation."""
+    cdef double_or_complex Ly
+    Ly = 0
+    if order == 2:
+        if not hollow:
+            # Central point:
+            Ly = D2_2ND_ORDER_0 * psi[i, j]
+        # Nearest neighbor:
+        Ly += D2_2ND_ORDER_1 * (psi[i, j-1] + psi[i, j+1])
+    elif order == 4:
+        if not hollow:
+            # Central point:
+            Ly = D2_4TH_ORDER_0 * psi[i, j]
+        # Nearest neighbor:
+        Ly += D2_4TH_ORDER_1 * (psi[i, j-1] + psi[i, j+1])
+        # Next nearest neighbor:
+        Ly += D2_4TH_ORDER_2 * (psi[i, j-2] + psi[i, j+2])
+    elif order == 6:
+        if not hollow:
+            # Central point:
+            Ly = D2_6TH_ORDER_0 * psi[i, j]
+        # Nearest neighbor:
+        Ly += D2_6TH_ORDER_1 * (psi[i, j-1] + psi[i, j+1])
+        # Next nearest neighbor:
+        Ly += D2_6TH_ORDER_2 * (psi[i, j-2] + psi[i, j+2])
+        # Next next nearest neighbor:
+        Ly += D2_6TH_ORDER_3 * (psi[i, j-3] + psi[i, j+3])
+
+    return Ly * over_dy2
+
+@cython.initializedcheck(False)
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+@cython.cdivision(True)
+cdef inline double_or_complex _laplacian_single_point_interior(
+    int i, int j, double_or_complex [:, :] psi, double over_dx2, double over_dy2, int order, int hollow) nogil:
+    """Compute the Laplacian at a single point i, j. No bounds checking is
+    performed, so one must be sure that i and j are at least order/2 away
+    fromt the edges. 1/dx^2 and 1/dy^2 must be provided. If "hollow" is true,
+    the central point is excluded from the calculation."""
+    return (_grad2x_single_point_interior(i, j, psi, over_dx2, order, hollow) +
+            _grad2y_single_point_interior(i, j, psi, over_dy2, order, hollow))
+
+
+@cython.initializedcheck(False)
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+@cython.cdivision(True)
+cdef inline void _laplacian_interior(
+     double_or_complex [:, :] psi, double_or_complex [:, :] out, double dx, double dy, int order, int hollow) nogil:
+    """Compute the laplacian of the array of a given order finite difference
+    scheme. Only operates on interior points, that is, points at least order/2
+    points away from the edge of the array."""
 
     cdef int i
     cdef int j
     cdef int nx
     cdef int ny
+    cdef int npts_edge = order // 2
     nx = psi.shape[0]
     ny = psi.shape[1]
 
@@ -38,35 +192,312 @@ cdef inline void _laplacian(double_or_complex [:, :] psi, double dx, double dy, 
 
     cdef double_or_complex Lx_ij
     cdef double_or_complex Ly_ij
-    for i in range(nx):
-        for j in range(ny):
-            Lx_ij = -2*psi[i, j]
-            Ly_ij = -2*psi[i, j]
-            if i != 0:
-                Lx_ij += psi[i-1, j]
-            if i != nx - 1:
-                Lx_ij += psi[i+1, j]
-            if j != 0:
-                Ly_ij += psi[i, j-1]
-            if j != ny - 1:
-                Ly_ij += psi[i, j+1]
-            out[i, j] = Lx_ij*over_dx2 + Ly_ij*over_dy2
+    for i in range(npts_edge, nx - npts_edge):
+        for j in range(npts_edge, ny - npts_edge):
+            out[i, j] =  _laplacian_single_point_interior(i, j, psi, over_dx2, over_dy2, order, hollow)
 
 
-cdef inline void complex_laplacian(double complex [:, :] A, double dx, double dy, double complex [:, :] out) nogil:
-    _laplacian(A, dx, dy, out)
+cdef inline void complex_laplacian_interior(
+    double complex [:, :] psi, double complex [:, :] out, double dx, double dy, int order, int hollow) nogil:
+    _laplacian_interior(psi, out, dx, dy, order, hollow)
 
+cdef inline void real_laplacian_interior(
+     double [:, :] psi, double [:, :] out, double dx, double dy, int order, int hollow) nogil:
+    _laplacian_interior(psi, out, dx, dy, order, hollow)
 
-cdef inline void real_laplacian(double [:, :] A, double dx, double dy, double [:, :] out) nogil:
-    _laplacian(A, dx, dy, out)
-
-
-def laplacian(psi, dx, dy):
+def laplacian_interior(psi, double dx, double dy):
     out = np.empty(psi.shape, dtype=psi.dtype)
-    if psi.dtype == np.complex128:
-        complex_laplacian(psi, dx, dy, out)
-    elif psi.dtype == np.float64:
-        real_laplacian(psi, dx, dy, out)
+    if psi.dtype == np.float64:
+        real_laplacian_interior(psi, out, dx, dy, order=2, hollow=0)
+    elif psi.dtype == np.complex128:
+        complex_laplacian_interior(psi, out, dx, dy, order=2, hollow=0)
+    return out
+
+
+@cython.initializedcheck(False)
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+@cython.cdivision(True)
+cdef inline double_or_complex _grad2x_single_point_edges(
+    int i, int j, int nx, double_or_complex [:, :] psi,
+    double_or_complex [:, :] left_buffer, double_or_complex [:, :] right_buffer,
+    double over_dx2, int order, int hollow) nogil:
+    """Compute the second x derivative at a single point i, j near the edges
+    of the array such that the buffers neighboring points are required. No
+    bounds checking is performed so the caller must ensure that indices are in
+    bounds. 1/dx^2 must be provided. If "hollow" is true, the central point is
+    excluded from the calculation."""
+    cdef double_or_complex Lx
+    Lx = 0
+    if order == 2:
+        if not hollow:
+            # Central point:
+            Lx = D2_2ND_ORDER_0 * psi[i, j]
+        # Nearest neighbors:
+        if i == 0:
+            Lx += D2_2ND_ORDER_1 * (left_buffer[0, j] + psi[i+1, j])
+        elif i == nx - 1:
+            Lx += D2_2ND_ORDER_1 * (psi[i-1, j] + right_buffer[0, j])
+    elif order == 4:
+        if not hollow:
+            # Central point:
+            Lx = D2_4TH_ORDER_0 * psi[i, j]
+        if i == 0:
+            # Nearest neighbor:
+            Lx += D2_4TH_ORDER_1 * (left_buffer[1, j] + psi[i+1, j])
+            # Next nearest neighbor:
+            Lx += D2_4TH_ORDER_2 * (left_buffer[0, j] + psi[i+2, j])
+        elif i == 1:
+            # Nearest neighbor:
+            Lx += D2_4TH_ORDER_1 * (psi[i-1, j] + psi[i+1, j])
+            # Next nearest neighbor:
+            Lx += D2_4TH_ORDER_2 * (left_buffer[1, j] + psi[i+2, j])
+        elif i == nx - 2:
+            # Nearest neighbor:
+            Lx += D2_4TH_ORDER_1 * (psi[i-1, j] + psi[i+1, j])
+            # Next nearest neighbor:
+            Lx += D2_4TH_ORDER_2 * (psi[i-2, j] + right_buffer[0, j])
+        elif i == nx - 1:
+            # Nearest neighbor:
+            Lx += D2_4TH_ORDER_1 * (psi[i-1, j] + right_buffer[0, j])
+            # Next nearest neighbor:
+            Lx += D2_4TH_ORDER_2 * (psi[i-2, j] + right_buffer[1, j])
+    elif order == 6:
+        if not hollow:
+            # Central point:
+            Lx = D2_6TH_ORDER_0 * psi[i, j]
+        if i == 0:
+            # Nearest neighbor:
+            Lx += D2_6TH_ORDER_1 * (left_buffer[2, j] +  psi[i+1, j])
+            # Next nearest neighbor:
+            Lx += D2_6TH_ORDER_2 * (left_buffer[1, j] + psi[i+2, j])
+            # Next next nearest neighbor:
+            Lx += D2_6TH_ORDER_3 * (left_buffer[0, j] + psi[i+3, j])
+        elif i == 1:
+            # Nearest neighbor:
+            Lx += D2_6TH_ORDER_1 * (psi[i-1, j] +  psi[i+1, j])
+            # Next nearest neighbor:
+            Lx += D2_6TH_ORDER_2 * (left_buffer[2, j] + psi[i+2, j])
+            # Next next nearest neighbor:
+            Lx += D2_6TH_ORDER_3 * (left_buffer[1, j] + psi[i+3, j])
+        elif i == 2:
+            # Nearest neighbor:
+            Lx += D2_6TH_ORDER_1 * (psi[i-1, j] +  psi[i+1, j])
+            # Next nearest neighbor:
+            Lx += D2_6TH_ORDER_2 * (psi[i-2, j] + psi[i+2, j])
+            # Next next nearest neighbor:
+            Lx += D2_6TH_ORDER_3 * (left_buffer[0, j] + psi[i+3, j])
+        elif i == nx - 3:
+            # Nearest neighbor:
+            Lx += D2_6TH_ORDER_1 * (psi[i-1, j] +  psi[i+1, j])
+            # Next nearest neighbor:
+            Lx += D2_6TH_ORDER_2 * (psi[i-2, j] + psi[i+2, j])
+            # Next next nearest neighbor:
+            Lx += D2_6TH_ORDER_3 * (psi[i-3, j] + right_buffer[0, j])
+        elif i == nx - 2:
+            # Nearest neighbor:
+            Lx += D2_6TH_ORDER_1 * (psi[i-1, j] +  psi[i+1, j])
+            # Next nearest neighbor:
+            Lx += D2_6TH_ORDER_2 * (psi[i-2, j] + right_buffer[0, j])
+            # Next next nearest neighbor:
+            Lx += D2_6TH_ORDER_3 * (psi[i-3, j] + right_buffer[1, j])
+        elif i == nx - 1:
+            # Nearest neighbor:
+            Lx += D2_6TH_ORDER_1 * (psi[i-1, j] +  right_buffer[0, j])
+            # Next nearest neighbor:
+            Lx += D2_6TH_ORDER_2 * (psi[i-2, j] + right_buffer[1, j])
+            # Next next nearest neighbor:
+            Lx += D2_6TH_ORDER_3 * (psi[i-3, j] + right_buffer[2, j])
+
+    return Lx * over_dx2
+
+
+@cython.initializedcheck(False)
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+@cython.cdivision(True)
+cdef inline double_or_complex _grad2y_single_point_edges(
+    int i, int j, int ny, double_or_complex [:, :] psi,
+    double_or_complex [:, :] bottom_buffer, double_or_complex [:, :] top_buffer,
+    double over_dy2, int order, int hollow):
+    """Compute the second x derivative at a single point i, j near the edges
+    of the array such that the buffers neighboring points are required. No
+    bounds checking is performed so the caller must ensure that indices are in
+    bounds. 1/dx^2 must be provided. If "hollow" is true, the central point is
+    excluded from the calculation."""
+    cdef double_or_complex Ly
+    Ly = 0
+    if order == 2:
+        if not hollow:
+            # Central point:
+            Ly = D2_2ND_ORDER_0 * psi[i, j]
+        # Nearest neighbors:
+        if j == 0:
+            Ly += D2_2ND_ORDER_1 * (bottom_buffer[i, 0] + psi[i, j+1])
+        elif j == ny - 1:
+            Ly += D2_2ND_ORDER_1 * (psi[i, j-1] + top_buffer[i, 0])
+    elif order == 4:
+        if not hollow:
+            # Central point:
+            Ly = D2_4TH_ORDER_0 * psi[i, j]
+        if j == 0:
+            # Nearest neighbor:
+            Ly += D2_4TH_ORDER_1 * (bottom_buffer[i, 1] + psi[i, j+1])
+            # Next nearest neighbor:
+            Ly += D2_4TH_ORDER_2 * (bottom_buffer[i, 0] + psi[i, j+2])
+        elif j == 1:
+            # Nearest neighbor:
+            Ly += D2_4TH_ORDER_1 * (psi[i, j-1] + psi[i, j+1])
+            # Next nearest neighbor:
+            Ly += D2_4TH_ORDER_2 * (bottom_buffer[i, 1] + psi[i, j+2])
+        elif j == ny - 2:
+            # Nearest neighbor:
+            Ly += D2_4TH_ORDER_1 * (psi[i, j-1] + psi[i, j+1])
+            # Next nearest neighbor:
+            Ly += D2_4TH_ORDER_2 * (psi[i, j-2] + top_buffer[i, 0])
+        elif j == ny - 1:
+            # Nearest neighbor:
+            Ly += D2_4TH_ORDER_1 * (psi[i, j-1] + top_buffer[i, 0])
+            # Next nearest neighbor:
+            Ly += D2_4TH_ORDER_2 * (psi[i, j-2] + top_buffer[i, 1])
+    elif order == 6:
+        if not hollow:
+            # Central point:
+            Ly = D2_6TH_ORDER_0 * psi[i, j]
+        if j == 0:
+            # Nearest neighbor:
+            Ly += D2_6TH_ORDER_1 * (bottom_buffer[i, 2] +  psi[i, j+1])
+            # Next nearest neighbor:
+            Ly += D2_6TH_ORDER_2 * (bottom_buffer[i, 1] + psi[i, j+2])
+            # Next next nearest neighbor:
+            Ly += D2_6TH_ORDER_3 * (bottom_buffer[i, 0] + psi[i, j+3])
+        elif j == 1:
+            # Nearest neighbor:
+            Ly += D2_6TH_ORDER_1 * (psi[i, j-1] +  psi[i, j+1])
+            # Next nearest neighbor:
+            Ly += D2_6TH_ORDER_2 * (bottom_buffer[i, 2] + psi[i, j+2])
+            # Next next nearest neighbor:
+            Ly += D2_6TH_ORDER_3 * (bottom_buffer[i, 1] + psi[i, j+3])
+        elif j == 2:
+            # Nearest neighbor:
+            Ly += D2_6TH_ORDER_1 * (psi[i, j-1] +  psi[i, j+1])
+            # Next nearest neighbor:
+            Ly += D2_6TH_ORDER_2 * (psi[i, j-2] + psi[i, j+2])
+            # Next next nearest neighbor:
+            Ly += D2_6TH_ORDER_3 * (bottom_buffer[i, 0] + psi[i, j+3])
+        elif j == ny - 3:
+            # Nearest neighbor:
+            Ly += D2_6TH_ORDER_1 * (psi[i, j-1] +  psi[i, j+1])
+            # Next nearest neighbor:
+            Ly += D2_6TH_ORDER_2 * (psi[i, j-2] + psi[i, j+2])
+            # Next next nearest neighbor:
+            Ly += D2_6TH_ORDER_3 * (psi[i, j-3] + top_buffer[i, 0])
+        elif j == ny - 2:
+            # Nearest neighbor:
+            Ly += D2_6TH_ORDER_1 * (psi[i, j-1] +  psi[i, j+1])
+            # Next nearest neighbor:
+            Ly += D2_6TH_ORDER_2 * (psi[i, j-2] + top_buffer[i, 0])
+            # Next next nearest neighbor:
+            Ly += D2_6TH_ORDER_3 * (psi[i, j-3] + top_buffer[i, 1])
+        elif j == ny - 1:
+            # Nearest neighbor:
+            Ly += D2_6TH_ORDER_1 * (psi[i, j-1] +  top_buffer[i, 0])
+            # Next nearest neighbor:
+            Ly += D2_6TH_ORDER_2 * (psi[i, j-2] + top_buffer[i, 1])
+            # Next next nearest neighbor:
+            Ly += D2_6TH_ORDER_3 * (psi[i, j-3] + top_buffer[i, 2])
+    else:
+        print('invalid')
+
+    return Ly * over_dy2
+
+@cython.initializedcheck(False)
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+@cython.cdivision(True)
+cdef inline double_or_complex _laplacian_single_point_edges(
+    int i, int j, int nx, int ny, double_or_complex [:, :] psi,
+    double_or_complex [:, :] left_buffer, double_or_complex [:, :] right_buffer,
+    double_or_complex [:, :] bottom_buffer, double_or_complex [:, :] top_buffer,
+    double over_dx2, double over_dy2, int order, int hollow):
+    """Compute the Laplacian at a single point i, j. No bounds checking is
+    performed, so one must be sure that i and j are at least order/2 away
+    fromt the edges. 1/dx^2 and 1/dy^2 must be provided. If "hollow" is true,
+    the central point is excluded from the calculation."""
+    cdef double_or_complex Lx
+    cdef double_or_complex Ly
+    cdef int npts = order // 2
+    if i < npts or i > nx - npts - 1:
+        Lx = _grad2x_single_point_edges(i, j, nx, psi, left_buffer, right_buffer, over_dx2, order, hollow)
+    else:
+        Lx = _grad2x_single_point_interior(i, j, psi, over_dx2, order, hollow)
+    if j < npts or j > ny - npts - 1:
+        Ly = _grad2y_single_point_edges(i, j, ny, psi, bottom_buffer, top_buffer, over_dy2, order, hollow)
+    else:
+        Ly = _grad2y_single_point_interior(i, j, psi, over_dy2, order, hollow)
+    return Lx + Ly
+
+
+
+@cython.initializedcheck(False)
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+@cython.cdivision(True)
+cdef inline void _laplacian_edges(
+     double_or_complex [:, :] psi, double_or_complex[:, :] out,
+     double_or_complex [:, :] left_buffer, double_or_complex [:, :] right_buffer,
+     double_or_complex [:, :] bottom_buffer, double_or_complex [:, :] top_buffer,
+     double dx, double dy, int order, int hollow):
+    """Compute the laplacian of the array of a given order finite difference
+    scheme. Only operates on edge points, that is, points at most order/2
+    points away from the edge of the array."""
+
+    cdef int i
+    cdef int j
+    cdef int nx
+    cdef int ny
+    cdef int npts_edge = order // 2
+    nx = psi.shape[0]
+    ny = psi.shape[1]
+
+    cdef double over_dx2 = 1/dx**2
+    cdef double over_dy2 = 1/dy**2
+
+    cdef double_or_complex Lx_ij
+    cdef double_or_complex Ly_ij
+    i = 0
+    j = 0
+    while True:
+        out[i, j] =  _laplacian_single_point_edges(i, j, nx, ny, psi,
+                                                   left_buffer, right_buffer, bottom_buffer, top_buffer,
+                                                   over_dx2, over_dy2, order, hollow)
+        iter_edges(&i, &j, nx, ny, order)
+        if i > nx - 1 or j > ny - 1:
+            break
+
+cdef inline void complex_laplacian_edges(
+    double complex [:, :] psi, double complex [:, :] out,
+    double complex [:, :] left_buffer, double complex [:, :] right_buffer,
+    double complex [:, :] bottom_buffer, double complex [:, :] top_buffer,
+    double dx, double dy, int order, int hollow):
+    _laplacian_edges(psi, out, left_buffer, right_buffer, bottom_buffer, top_buffer, dx, dy, order, hollow)
+
+cdef inline void real_laplacian_edges(
+     double [:, :] psi, double [:, :] out,
+     double [:, :] left_buffer, double [:, :] right_buffer,
+     double [:, :] bottom_buffer, double [:, :] top_buffer,
+     double dx, double dy, int order, int hollow):
+    _laplacian_edges(psi, out, left_buffer, right_buffer, bottom_buffer, top_buffer, dx, dy, order, hollow)
+
+def laplacian_edges(psi, out, left_buffer, right_buffer, bottom_buffer, top_buffer, dx, dy):
+    if psi.dtype == np.float64:
+        real_laplacian_edges(psi, out, left_buffer, right_buffer, bottom_buffer, top_buffer, dx, dy, order=2, hollow=0)
+    elif psi.dtype == np.complex128:
+        complex_laplacian_edges(psi, out, left_buffer, right_buffer, bottom_buffer, top_buffer, dx, dy, order=2, hollow=0)
     return out
 
 

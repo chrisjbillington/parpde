@@ -63,7 +63,7 @@ def H(t, psi):
     n = abs(psi)**2
     H_local_lin = V
     H_local_nonlin = g * n
-    grad2psi = simulator.par_laplacian_finalise(grad2psi)
+    grad2psi = simulator.par_laplacian_finalise(psi, grad2psi)
     K_psi = -hbar**2/(2*m)*grad2psi
     return K_psi, H_local_lin, H_local_nonlin
 

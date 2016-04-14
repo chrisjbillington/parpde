@@ -4,7 +4,7 @@ import enum
 import numpy as np
 from mpi4py import MPI
 import h5py
-from cython_functions import laplacian, SOR_step_interior, SOR_step_edges
+from cython_functions import laplacian_interior, laplacian_edges, SOR_step_interior, SOR_step_edges
 from scipy.fftpack import fft2, ifft2
 
 
@@ -42,13 +42,6 @@ def format_float(x, sigfigs=4, units=''):
     elif units:
         result += ' '
     return result + units
-
-
-# Some slice objects for conveniently slicing arrays:
-LEFT_EDGE = np.s_[0]
-RIGHT_EDGE = np.s_[-1]
-BOTTOM_EDGE = np.s_[:, 0]
-TOP_EDGE = np.s_[:, -1]
 
 
 # Constants to represent differential operators:
@@ -302,19 +295,13 @@ class Simulator2D(object):
     def par_laplacian_init(self, psi, order=2):
         self.MPI_send_at_edges(psi, order)
         # Compute laplacian on internal elements:
-        result = np.zeros(psi.shape, dtype=psi.dtype)
-        result = laplacian(psi, self.dx, self.dy)
+        result = laplacian_interior(psi, self.dx, self.dy)
         return result
 
-    def par_laplacian_finalise(self, result, order=2):
+    def par_laplacian_finalise(self, psi, result, order=2):
         self.MPI_receive_at_edges()
-        # Add contribution on edges from adjacent MPI processes:
         left_buffer, right_buffer, bottom_buffer, top_buffer = self.MPI_receive_buffers[result.dtype.type, order]
-        npts = order // 2
-        result[:npts, :] += left_buffer/self.dx**2
-        result[-npts:, :] += right_buffer/self.dx**2
-        result[:, :npts] += bottom_buffer/self.dy**2
-        result[:, -npts:] += top_buffer/self.dy**2
+        result = laplacian_edges(psi, result, left_buffer, right_buffer, bottom_buffer, top_buffer, self.dx, self.dy)
         return result
 
     def par_laplacian(self, psi, order=2):
