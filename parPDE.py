@@ -5,6 +5,7 @@ import numpy as np
 from mpi4py import MPI
 import h5py
 from cython_functions import laplacian, SOR_step_interior, SOR_step_edges
+from scipy.fftpack import fft2, ifft2
 
 
 def format_float(x, sigfigs=4, units=''):
@@ -146,6 +147,22 @@ class Simulator2D(object):
 
         self.x = np.linspace(self.x_min, self.x_max, self.nx).reshape((self.nx, 1))
         self.y = np.linspace(self.y_min, self.y_max, self.ny).reshape((1, self.ny))
+
+
+        self.kx = self.ky = self.f_gradx = self.grady = self.f_laplacian = None
+        if self.MPI_size_x == 1:
+            # For FFTs, which can be done only on a single node in periodic directions:
+            if periodic_x:
+                self.kx = 2 * np.pi * np.fft.fftfreq(self.nx, d=self.dx).reshape((self.nx, 1))
+                # x derivative operator in Fourier space:
+                self.f_gradx = 1j*self.kx
+            if periodic_y:
+                self.ky = 2 * np.pi * np.fft.fftfreq(self.ny, d=self.dy).reshape((1, self.ny))
+                # y derivative operator in Fourier space:
+                self.f_grady = 1j*self.ky
+            if periodic_x and periodic_y:
+                # Laplace operator in Fourier space:
+                self.f_laplacian = -(self.kx**2 + self.ky**2)
 
 
     def _setup_MPI_grid(self):
@@ -336,6 +353,27 @@ class Simulator2D(object):
             result[:, -1] += self.MPI_top_receive_buffer_complex/self.dy**2
         return result
 
+    def par_laplacian(self, psi):
+        result = self.par_laplacian_init(psi)
+        return self.par_laplacian_finalise(result)
+
+    def fft_laplacian(self, psi):
+        if self.MPI_size > 1 or not (self.periodic_x and self.periodic_y):
+            msg = "FFT laplacian can only be done in a single node with periodic x and y directions"
+            raise RuntimeError(msg)
+        return ifft2(self.f_laplacian*fft2(psi))
+
+    def fft_gradx(self, psi):
+        if self.MPI_size > 1 or not self.periodic_x:
+            msg = "FFT laplacian can only be done in a single node with periodic x direction"
+            raise RuntimeError(msg)
+        return ifft2(self.f_gradx*fft2(psi))
+
+    def fft_grady(self, psi):
+        if self.MPI_size > 1 or not self.periodic_y:
+            msg = "FFT laplacian can only be done in a single node with periodic y direction"
+            raise RuntimeError(msg)
+        return ifft2(self.f_grady*fft2(psi))
 
 
 class HDFOutput(object):
