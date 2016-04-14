@@ -87,7 +87,7 @@ if __name__ == '__main__':
     psi = np.sqrt(psi)
 
     # Find the groundstate:
-    psi = bec2d.find_groundstate(groundstate_system, H, mu, psi, relaxation_parameter=1.7, convergence=1e-13,
+    psi = bec2d.find_groundstate(groundstate_system, H, mu, psi, relaxation_parameter=1.7, convergence=1e-13, operator_order=2,
                                  output_interval=100, output_directory='groundstate', convergence_check_interval=10)
 
     # psi is real so far, convert it to complex:

@@ -704,7 +704,6 @@ cdef inline void _SOR_step_edges_complex(double complex [:, :] psi, double compl
                     left_edge_buffer, right_edge_buffer, bottom_edge_buffer, top_edge_buffer, squared_error_ptr,
                     compute_error)
 
-
 cdef inline void _SOR_step_edges_real(double [:, :] psi, double [:, :] A_diag,
                                     double [:, :] b, double dx, double dy, double relaxation_parameter,
                                     int use_laplacian, double [:, :] laplacian_coefficient,

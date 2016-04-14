@@ -4,7 +4,7 @@ import enum
 import numpy as np
 from mpi4py import MPI
 import h5py
-from cython_functions import laplacian_interior, laplacian_edges, SOR_step_interior, SOR_step_edges
+from finite_differences import laplacian_interior, laplacian_edges, SOR_step_interior, SOR_step_edges
 from scipy.fftpack import fft2, ifft2
 
 

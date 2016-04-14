@@ -11,7 +11,7 @@ if not os.path.exists(extension_name):
         current_folder = os.getcwd()
         try:
             os.chdir(this_folder)
-            os.system("python setup_cython.py build_ext --inplace")
+            os.system("python setup.py build_ext --inplace")
             shutil.rmtree('build')
             os.unlink('_cython_functions.c')
         finally:
