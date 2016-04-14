@@ -217,27 +217,6 @@ class Simulator2D(object):
         if self.MPI_y_coord >= ny_remaining:
             self.global_first_y_index += ny_remaining
 
-        # The data we want to send to adjacent processes isn't in contiguous
-        # memory, so we need to copy it into and out of temporary buffers.
-        # Buffers for sending real numbers:
-        self.MPI_left_send_buffer_real = np.zeros(self.ny, dtype=np.float64)
-        self.MPI_left_receive_buffer_real = np.zeros(self.ny, dtype=np.float64)
-        self.MPI_right_send_buffer_real = np.zeros(self.ny, dtype=np.float64)
-        self.MPI_right_receive_buffer_real = np.zeros(self.ny, dtype=np.float64)
-        self.MPI_top_send_buffer_real = np.zeros(self.nx, dtype=np.float64)
-        self.MPI_top_receive_buffer_real = np.zeros(self.nx, dtype=np.float64)
-        self.MPI_bottom_send_buffer_real = np.zeros(self.nx, dtype=np.float64)
-        self.MPI_bottom_receive_buffer_real = np.zeros(self.nx, dtype=np.float64)
-        # Buffers for sending complex numbers:
-        self.MPI_left_send_buffer_complex = np.zeros(self.ny, dtype=np.complex128)
-        self.MPI_left_receive_buffer_complex = np.zeros(self.ny, dtype=np.complex128)
-        self.MPI_right_send_buffer_complex = np.zeros(self.ny, dtype=np.complex128)
-        self.MPI_right_receive_buffer_complex = np.zeros(self.ny, dtype=np.complex128)
-        self.MPI_top_send_buffer_complex = np.zeros(self.nx, dtype=np.complex128)
-        self.MPI_top_receive_buffer_complex = np.zeros(self.nx, dtype=np.complex128)
-        self.MPI_bottom_send_buffer_complex = np.zeros(self.nx, dtype=np.complex128)
-        self.MPI_bottom_receive_buffer_complex = np.zeros(self.nx, dtype=np.complex128)
-
         # We need to tag our data to have a way other than rank to distinguish
         # between multiple messages the two tasks might be sending each other
         # at the same time:
@@ -246,72 +225,63 @@ class Simulator2D(object):
         TAG_DOWN_TO_UP = 2
         TAG_UP_TO_DOWN = 3
 
-        # Create persistent requests for the data transfers we will regularly be doing:
-        self.MPI_send_left_real = self.MPI_comm.Send_init(self.MPI_left_send_buffer_real,
-                                                          self.MPI_rank_left, tag=TAG_RIGHT_TO_LEFT)
-        self.MPI_send_right_real = self.MPI_comm.Send_init(self.MPI_right_send_buffer_real,
-                                                           self.MPI_rank_right, tag=TAG_LEFT_TO_RIGHT)
-        self.MPI_receive_left_real = self.MPI_comm.Recv_init(self.MPI_left_receive_buffer_real,
-                                                             self.MPI_rank_left, tag=TAG_LEFT_TO_RIGHT)
-        self.MPI_receive_right_real = self.MPI_comm.Recv_init(self.MPI_right_receive_buffer_real,
-                                                              self.MPI_rank_right, tag=TAG_RIGHT_TO_LEFT)
-        self.MPI_send_bottom_real = self.MPI_comm.Send_init(self.MPI_bottom_send_buffer_real,
-                                                            self.MPI_rank_down, tag=TAG_UP_TO_DOWN)
-        self.MPI_send_top_real = self.MPI_comm.Send_init(self.MPI_top_send_buffer_real,
-                                                         self.MPI_rank_up, tag=TAG_DOWN_TO_UP)
-        self.MPI_receive_bottom_real = self.MPI_comm.Recv_init(self.MPI_bottom_receive_buffer_real,
-                                                               self.MPI_rank_down, tag=TAG_DOWN_TO_UP)
-        self.MPI_receive_top_real = self.MPI_comm.Recv_init(self.MPI_top_receive_buffer_real,
-                                                            self.MPI_rank_up, tag=TAG_UP_TO_DOWN)
+        # Buffers and MPI request objects for sending and receiving data to
+        # and from other processes. Sorted by whether the datatype is real or
+        # complex, and by the order of differential operator that they
+        # facilitate - for example, 2nd order derivatives require sending only
+        # one point at edges, whereas 4th order derivatives require sending
+        # two.
+        self.MPI_send_buffers = {}
+        self.MPI_receive_buffers = {}
+        self.MPI_requests = {}
+        for dtype in [np.float64, np.complex128]:
+            for order in [2, 4, 6]:
+                x_edge_shape = (order//2, self.ny)
+                y_edge_shape = (self.nx, order//2)
+                left_send_buffer = np.zeros(x_edge_shape, dtype=dtype)
+                left_receive_buffer = np.zeros(x_edge_shape, dtype=dtype)
+                right_send_buffer = np.zeros(x_edge_shape, dtype=dtype)
+                right_receive_buffer = np.zeros(x_edge_shape, dtype=dtype)
+                bottom_send_buffer = np.zeros(y_edge_shape, dtype=dtype)
+                bottom_receive_buffer = np.zeros(y_edge_shape, dtype=dtype)
+                top_send_buffer = np.zeros(y_edge_shape, dtype=dtype)
+                top_receive_buffer = np.zeros(y_edge_shape, dtype=dtype)
 
-        self.MPI_all_requests_real = [self.MPI_send_left_real, self.MPI_receive_left_real,
-                                      self.MPI_send_right_real, self.MPI_receive_right_real,
-                                      self.MPI_send_bottom_real, self.MPI_receive_bottom_real,
-                                      self.MPI_send_top_real, self.MPI_receive_top_real]
 
+                send_left = self.MPI_comm.Send_init(left_send_buffer, self.MPI_rank_left, tag=TAG_RIGHT_TO_LEFT)
+                send_right = self.MPI_comm.Send_init(right_send_buffer, self.MPI_rank_right, tag=TAG_LEFT_TO_RIGHT)
+                send_bottom = self.MPI_comm.Send_init(bottom_send_buffer, self.MPI_rank_down, tag=TAG_UP_TO_DOWN)
+                send_top = self.MPI_comm.Send_init(top_send_buffer, self.MPI_rank_up, tag=TAG_DOWN_TO_UP)
+                receive_left = self.MPI_comm.Recv_init(left_receive_buffer, self.MPI_rank_left, tag=TAG_LEFT_TO_RIGHT)
+                receive_right = self.MPI_comm.Recv_init(right_receive_buffer, self.MPI_rank_right, tag=TAG_RIGHT_TO_LEFT)
+                receive_bottom = self.MPI_comm.Recv_init(bottom_receive_buffer, self.MPI_rank_down, tag=TAG_DOWN_TO_UP)
+                receive_top = self.MPI_comm.Recv_init(top_receive_buffer, self.MPI_rank_up, tag=TAG_UP_TO_DOWN)
 
-        # Create persistent requests for the data transfers we will regularly be doing:
-        self.MPI_send_left_complex = self.MPI_comm.Send_init(self.MPI_left_send_buffer_complex,
-                                                             self.MPI_rank_left, tag=TAG_RIGHT_TO_LEFT)
-        self.MPI_send_right_complex = self.MPI_comm.Send_init(self.MPI_right_send_buffer_complex,
-                                                              self.MPI_rank_right, tag=TAG_LEFT_TO_RIGHT)
-        self.MPI_receive_left_complex = self.MPI_comm.Recv_init(self.MPI_left_receive_buffer_complex,
-                                                                self.MPI_rank_left, tag=TAG_LEFT_TO_RIGHT)
-        self.MPI_receive_right_complex = self.MPI_comm.Recv_init(self.MPI_right_receive_buffer_complex,
-                                                                 self.MPI_rank_right, tag=TAG_RIGHT_TO_LEFT)
-        self.MPI_send_bottom_complex = self.MPI_comm.Send_init(self.MPI_bottom_send_buffer_complex,
-                                                               self.MPI_rank_down, tag=TAG_UP_TO_DOWN)
-        self.MPI_send_top_complex = self.MPI_comm.Send_init(self.MPI_top_send_buffer_complex,
-                                                            self.MPI_rank_up, tag=TAG_DOWN_TO_UP)
-        self.MPI_receive_bottom_complex = self.MPI_comm.Recv_init(self.MPI_bottom_receive_buffer_complex,
-                                                                  self.MPI_rank_down, tag=TAG_DOWN_TO_UP)
-        self.MPI_receive_top_complex = self.MPI_comm.Recv_init(self.MPI_top_receive_buffer_complex,
-                                                               self.MPI_rank_up, tag=TAG_UP_TO_DOWN)
+                self.MPI_send_buffers[dtype, order] = (left_send_buffer, right_send_buffer,
+                                                       bottom_send_buffer, top_send_buffer)
 
-        self.MPI_all_requests_complex = [self.MPI_send_left_complex, self.MPI_receive_left_complex,
-                                         self.MPI_send_right_complex, self.MPI_receive_right_complex,
-                                         self.MPI_send_bottom_complex, self.MPI_receive_bottom_complex,
-                                         self.MPI_send_top_complex, self.MPI_receive_top_complex]
+                self.MPI_receive_buffers[dtype, order] = (left_receive_buffer, right_receive_buffer,
+                                                          bottom_receive_buffer, top_receive_buffer)
+
+                self.MPI_requests[dtype, order] = (send_left, send_right, send_bottom, send_top,
+                                                   receive_left, receive_right, receive_bottom, receive_top)
         self.pending_requests = None
 
 
-    def MPI_send_at_edges(self, psi):
-        """Start an asynchronous MPI send data from the edges of A to all
-        adjacent MPI processes"""
-        if psi.dtype == np.float64:
-            self.MPI_left_send_buffer_real[:] = psi[LEFT_EDGE]
-            self.MPI_right_send_buffer_real[:] = psi[RIGHT_EDGE]
-            self.MPI_bottom_send_buffer_real[:] = psi[BOTTOM_EDGE]
-            self.MPI_top_send_buffer_real[:] = psi[TOP_EDGE]
-            MPI.Prequest.Startall(self.MPI_all_requests_real)
-            self.pending_requests = self.MPI_all_requests_real
-        elif psi.dtype == np.complex128:
-            self.MPI_left_send_buffer_complex[:] = psi[LEFT_EDGE]
-            self.MPI_right_send_buffer_complex[:] = psi[RIGHT_EDGE]
-            self.MPI_bottom_send_buffer_complex[:] = psi[BOTTOM_EDGE]
-            self.MPI_top_send_buffer_complex[:] = psi[TOP_EDGE]
-            MPI.Prequest.Startall(self.MPI_all_requests_complex)
-            self.pending_requests = self.MPI_all_requests_complex
+    def MPI_send_at_edges(self, psi, order):
+        """Start an asynchronous MPI send data from the edges of psi to all
+        adjacent MPI processes. order is the order of derivative operator
+        facilitated by the transfer, order/2 points at each edges are sent."""
+        if order > 2:
+            raise NotImplementedError("Only second order finite differences implemented")
+        left_buffer, right_buffer, bottom_buffer, top_buffer = self.MPI_send_buffers[psi.dtype.type, order]
+        npts = order // 2
+        left_buffer[:] = psi[:npts, :]
+        right_buffer[:] = psi[-npts:, :]
+        bottom_buffer[:] = psi[:, :npts]
+        top_buffer[:] = psi[:, -npts:]
+        self.pending_requests = self.MPI_requests[psi.dtype.type, order]
+        MPI.Prequest.Startall(self.pending_requests)
 
     def MPI_receive_at_edges(self):
         """Finalise an asynchronous MPI transfer from all adjacent MPI
@@ -329,33 +299,27 @@ class Simulator2D(object):
         self.MPI_comm.Allreduce(local_dot, result, MPI.SUM)
         return result[0]
 
-    def par_laplacian_init(self, psi):
-        # if not self.pending_requests:
-        self.MPI_send_at_edges(psi)
+    def par_laplacian_init(self, psi, order=2):
+        self.MPI_send_at_edges(psi, order)
         # Compute laplacian on internal elements:
         result = np.zeros(psi.shape, dtype=psi.dtype)
         result = laplacian(psi, self.dx, self.dy)
         return result
 
-    def par_laplacian_finalise(self, result):
-        # if self.pending_requests:
+    def par_laplacian_finalise(self, result, order=2):
         self.MPI_receive_at_edges()
         # Add contribution on edges from adjacent MPI processes:
-        if result.dtype == np.float64:
-            result[0, :] += self.MPI_left_receive_buffer_real/self.dx**2
-            result[-1, :] += self.MPI_right_receive_buffer_real/self.dx**2
-            result[:, 0] += self.MPI_bottom_receive_buffer_real/self.dy**2
-            result[:, -1] += self.MPI_top_receive_buffer_real/self.dy**2
-        elif result.dtype == np.complex128:
-            result[0, :] += self.MPI_left_receive_buffer_complex/self.dx**2
-            result[-1, :] += self.MPI_right_receive_buffer_complex/self.dx**2
-            result[:, 0] += self.MPI_bottom_receive_buffer_complex/self.dy**2
-            result[:, -1] += self.MPI_top_receive_buffer_complex/self.dy**2
+        left_buffer, right_buffer, bottom_buffer, top_buffer = self.MPI_receive_buffers[result.dtype.type, order]
+        npts = order // 2
+        result[:npts, :] += left_buffer/self.dx**2
+        result[-npts:, :] += right_buffer/self.dx**2
+        result[:, :npts] += bottom_buffer/self.dy**2
+        result[:, -npts:] += top_buffer/self.dy**2
         return result
 
-    def par_laplacian(self, psi):
-        result = self.par_laplacian_init(psi)
-        return self.par_laplacian_finalise(result)
+    def par_laplacian(self, psi, order=2):
+        result = self.par_laplacian_init(psi, order)
+        return self.par_laplacian_finalise(result, order)
 
     def fft_laplacian(self, psi):
         if self.MPI_size > 1 or not (self.periodic_x and self.periodic_y):
@@ -543,13 +507,13 @@ def rk4ilip(dt, t_final, dpsi_dt, psi, omega_imag_provided=False,
     _pre_step_checks(i, t, psi, output_interval, output_callback, post_step_callback, final_call=True)
 
 
-def successive_overrelaxation(simulator, system, psi, relaxation_parameter=1.7, convergence=1e-13,
+def successive_overrelaxation(simulator, system, psi, relaxation_parameter=1.7, convergence=1e-13, operator_order=2,
                                output_interval=100, output_callback=None, post_step_callback=None,
                                convergence_check_interval=10):
     i = 0
     while True:
         _pre_step_checks(i, 0, psi, output_interval, output_callback, post_step_callback)
-        simulator.MPI_send_at_edges(psi)
+        simulator.MPI_send_at_edges(psi, operator_order)
         A_diag, A_nondiag, b = system(psi)
         if not i % convergence_check_interval:
             # Only compute the error every convergence_check_interval steps to save time
@@ -560,16 +524,8 @@ def successive_overrelaxation(simulator, system, psi, relaxation_parameter=1.7, 
         squared_error = SOR_step_interior(psi, A_diag, A_nondiag, b, simulator.dx, simulator.dy,
                                           relaxation_parameter, compute_error=compute_error)
         simulator.MPI_receive_at_edges()
-        if psi.dtype == np.complex128:
-            left_buffer = simulator.MPI_left_receive_buffer_complex
-            right_buffer = simulator.MPI_right_receive_buffer_complex
-            bottom_buffer = simulator.MPI_bottom_receive_buffer_complex
-            top_buffer = simulator.MPI_top_receive_buffer_complex
-        elif psi.dtype == np.float64:
-            left_buffer = simulator.MPI_left_receive_buffer_real
-            right_buffer = simulator.MPI_right_receive_buffer_real
-            bottom_buffer = simulator.MPI_bottom_receive_buffer_real
-            top_buffer = simulator.MPI_top_receive_buffer_real
+        left_buffer, right_buffer, bottom_buffer, top_buffer = simulator.MPI_receive_buffers[psi.dtype.type, operator_order]
+
         squared_error = SOR_step_edges(psi, A_diag, A_nondiag, b, simulator.dx, simulator.dy, relaxation_parameter,
                                        left_buffer, right_buffer, bottom_buffer, top_buffer, squared_error,
                                        compute_error=compute_error)

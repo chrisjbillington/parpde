@@ -44,9 +44,15 @@ class BEC2D(object):
         ncalc = self.simulator.par_vdot(psi, psi).real * self.dx * self.dy
         return ncalc
 
-    def find_groundstate(self, system, H, mu, psi, relaxation_parameter=1.7, convergence=1e-13,
-                         output_interval=100, output_directory=None,
-                         convergence_check_interval=10):
+    def normalise(self, psi, N_2D):
+        """Normalise psi to the 2D normalisation constant N_2D, which has
+        units of a linear density. Modifies psi in-place and returns None."""
+        # imposing normalisation on the wavefunction:
+        ncalc = self.compute_number(psi)
+        psi[:] *= np.sqrt(N_2D/ncalc)
+
+    def find_groundstate(self, system, H, mu, psi, relaxation_parameter=1.7, convergence=1e-13, operator_order=2,
+                         output_interval=100, output_directory=None, convergence_check_interval=10):
         """Find the groundstate of a condensate with sucessive overrelaxation.
         A function for the system of equations being solved is required, as is
         the Hamiltonian (used only for computing the chemical potential to
@@ -96,7 +102,7 @@ class BEC2D(object):
 
         # Start the relaxation:
         start_time = time.time()
-        successive_overrelaxation(self.simulator, system, psi, relaxation_parameter, convergence,
+        successive_overrelaxation(self.simulator, system, psi, relaxation_parameter, convergence, operator_order,
                                   output_interval, output_callback, post_step_callback=None,
                                   convergence_check_interval=convergence_check_interval)
         if not self.simulator.MPI_rank: # Only rank 0 should print
@@ -105,7 +111,7 @@ class BEC2D(object):
 
 
     def evolve(self, dt, t_final, H, psi, mu=0, method='rk4', imaginary_time=False,
-               output_interval=100, output_directory=None):
+               output_interval=100, output_directory=None, post_step_callback=None):
 
         """Evolve a wavefunction in time. Timestep, final time, the
         Hamiltonian H and the initial wavefunction are required. mu is
@@ -199,9 +205,9 @@ class BEC2D(object):
         # Start the integration:
         if method == 'rk4':
             rk4(dt, t_final, dpsi_dt, psi,
-                output_interval=output_interval, output_callback=output_callback,  post_step_callback=None)
+                output_interval=output_interval, output_callback=output_callback, post_step_callback=post_step_callback)
         elif method == 'rk4ilip':
             rk4ilip(dt, t_final, dpsi_dt, psi, omega_imag_provided,
-                    output_interval=output_interval, output_callback=output_callback)
+                    output_interval=output_interval, output_callback=output_callback, post_step_callback=post_step_callback)
 
         return psi

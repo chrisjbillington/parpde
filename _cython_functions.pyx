@@ -139,8 +139,8 @@ cdef inline void _SOR_step_interior(double_or_complex [:, :] psi, double_or_comp
 cdef inline void _SOR_step_edges(double_or_complex [:, :] psi, double_or_complex [:, :] A_diag,
                                     double_or_complex [:, :] b, double dx, double dy, double relaxation_parameter,
                                     int use_laplacian, double_or_complex [:, :] laplacian_coefficient,
-                                    double_or_complex[:] left_edge_buffer, double_or_complex[:] right_edge_buffer,
-                                    double_or_complex[:] bottom_edge_buffer, double_or_complex[:] top_edge_buffer,
+                                    double_or_complex[:, :] left_edge_buffer, double_or_complex[:, :] right_edge_buffer,
+                                    double_or_complex[:, :] bottom_edge_buffer, double_or_complex[:, :] top_edge_buffer,
                                     double * squared_error_ptr, int compute_error) nogil:
     cdef int i
     cdef int j
@@ -173,19 +173,19 @@ cdef inline void _SOR_step_edges(double_or_complex [:, :] psi, double_or_complex
     j = 0
     while True:
         if i == 0:
-            psi_left = left_edge_buffer[j]
+            psi_left = left_edge_buffer[0, j]
         else:
             psi_left = psi[i - 1, j]
         if i == nx - 1:
-            psi_right = right_edge_buffer[j]
+            psi_right = right_edge_buffer[0, j]
         else:
             psi_right = psi[i + 1, j]
         if j == 0:
-            psi_bottom = bottom_edge_buffer[i]
+            psi_bottom = bottom_edge_buffer[i, 0]
         else:
             psi_bottom = psi[i, j - 1]
         if j == ny - 1:
-            psi_top = top_edge_buffer[i]
+            psi_top = top_edge_buffer[i, 0]
         else:
             psi_top = psi[i, j + 1]
 
@@ -266,8 +266,8 @@ cdef inline void _SOR_step_interior_real(double [:, :] psi, double [:, :] A_diag
 cdef inline void _SOR_step_edges_complex(double complex [:, :] psi, double complex [:, :] A_diag,
                                     double complex [:, :] b, double dx, double dy, double relaxation_parameter,
                                     int use_laplacian, double complex [:, :] laplacian_coefficient,
-                                    double complex [:] left_edge_buffer, double complex [:] right_edge_buffer,
-                                    double complex [:] bottom_edge_buffer, double complex [:] top_edge_buffer,
+                                    double complex [:, :] left_edge_buffer, double complex [:, :] right_edge_buffer,
+                                    double complex [:, :] bottom_edge_buffer, double complex [:, :] top_edge_buffer,
                                     double * squared_error_ptr, int compute_error) nogil:
     _SOR_step_edges(psi, A_diag, b, dx, dy, relaxation_parameter, use_laplacian, laplacian_coefficient,
                     left_edge_buffer, right_edge_buffer, bottom_edge_buffer, top_edge_buffer, squared_error_ptr,
@@ -277,8 +277,8 @@ cdef inline void _SOR_step_edges_complex(double complex [:, :] psi, double compl
 cdef inline void _SOR_step_edges_real(double [:, :] psi, double [:, :] A_diag,
                                     double [:, :] b, double dx, double dy, double relaxation_parameter,
                                     int use_laplacian, double [:, :] laplacian_coefficient,
-                                    double [:] left_edge_buffer, double [:] right_edge_buffer,
-                                    double [:] bottom_edge_buffer, double [:] top_edge_buffer,
+                                    double [:, :] left_edge_buffer, double [:, :] right_edge_buffer,
+                                    double [:, :] bottom_edge_buffer, double [:, :] top_edge_buffer,
                                     double * squared_error_ptr, int compute_error) nogil:
     _SOR_step_edges(psi, A_diag, b, dx, dy, relaxation_parameter, use_laplacian, laplacian_coefficient,
                     left_edge_buffer, right_edge_buffer, bottom_edge_buffer, top_edge_buffer, squared_error_ptr,
