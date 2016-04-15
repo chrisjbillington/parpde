@@ -16,7 +16,8 @@ if not os.path.exists(extension_so) or os.path.getmtime(extension_so) < os.path.
         current_folder = os.getcwd()
         try:
             os.chdir(this_folder)
-            os.system("python setup.py build_ext --inplace")
+            if os.system("python setup.py build_ext --inplace") != 0:
+                raise ImportError("Couldn't compile cython extension")
             shutil.rmtree('build')
             os.unlink(extension_c)
         finally:

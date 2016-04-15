@@ -44,13 +44,20 @@ def format_float(x, sigfigs=4, units=''):
     return result + units
 
 
-# Constants to represent differential operators:
+# Constants to represent differential operators. Must match the corresponding
+# enum in finite_differences/_finite_differences.pyx
 class Operators(enum.IntEnum):
-    LAPLACIAN = 0
+    GRADX = 0
+    GRADY = 1
+    GRAD2X = 2
+    GRAD2Y = 3
+    LAPLACIAN = 4
 
 
 class OperatorSum(dict):
-    """Class for representing a weighted sum of operators"""
+    """Class for representing a weighted sum of operators. Supports
+    arithemetic operations, and coefficients can be numpy arrays for spatially
+    varying coefficients."""
     def __add__(self, other):
         new = OperatorSum(self)
         for obj, coefficient in other.items():
@@ -509,13 +516,13 @@ def successive_overrelaxation(simulator, system, psi, relaxation_parameter=1.7, 
         else:
             compute_error = False
         squared_error = SOR_step_interior(psi, A_diag, A_nondiag, b, simulator.dx, simulator.dy,
-                                          relaxation_parameter, compute_error=compute_error)
+                                          relaxation_parameter, operator_order, compute_error=compute_error)
         simulator.MPI_receive_at_edges()
         left_buffer, right_buffer, bottom_buffer, top_buffer = simulator.MPI_receive_buffers[psi.dtype.type, operator_order]
 
         squared_error = SOR_step_edges(psi, A_diag, A_nondiag, b, simulator.dx, simulator.dy, relaxation_parameter,
-                                       left_buffer, right_buffer, bottom_buffer, top_buffer, squared_error,
-                                       compute_error=compute_error)
+                                       left_buffer, right_buffer, bottom_buffer, top_buffer,
+                                       operator_order, squared_error, compute_error=compute_error)
         if compute_error:
             squared_error = np.asarray(squared_error).reshape(1)
             total_squared_error = np.zeros(1)

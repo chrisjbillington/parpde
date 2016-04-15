@@ -4,9 +4,16 @@ from __future__ import print_function
 cimport cython
 import numpy as np
 
-LAPLACIAN = 0
+cdef enum Operator:
+    GRADX = 0
+    GRADY = 1
+    GRAD2X = 2
+    GRAD2Y = 3
+    LAPLACIAN = 4
 
-EMPTY_2D_ARRAY = np.zeros((1, 1))
+
+ZEROS_REAL_2D = np.zeros((1, 1), dtype=np.float64)
+ZEROS_COMPLEX_2D = np.zeros((1, 1), dtype=np.complex128)
 
 
 ctypedef fused double_or_complex:
@@ -40,6 +47,7 @@ DEF D2_6TH_ORDER_1 = 3.0/2.0
 DEF D2_6TH_ORDER_2 = -3.0/20.0
 DEF D2_6TH_ORDER_3 = 1.0/90.0
 
+
 @cython.initializedcheck(False)
 @cython.boundscheck(False)
 @cython.wraparound(False)
@@ -47,7 +55,7 @@ DEF D2_6TH_ORDER_3 = 1.0/90.0
 @cython.cdivision(True)
 cdef inline void iter_edges(int * i, int * j, int nx, int ny, int order) nogil:
     """Increment i and j so as to iterate over the points within order/2 of
-    the edge of the array. Caller is responsible for not calling any more when
+    the edge of the array. Caller is responsible for not calling any more after
     i = nx - 1 and j = ny - 1"""
     cdef int npts = order // 2
     if i[0] < npts:
@@ -78,22 +86,69 @@ cdef inline void iter_edges(int * i, int * j, int nx, int ny, int order) nogil:
 @cython.wraparound(False)
 @cython.nonecheck(False)
 @cython.cdivision(True)
+cdef inline object process_operators(
+    psi, A_nondiag, int * use_gradx, int * use_grady,int * use_grad2x, int * use_grad2y, int * use_laplacian):
+    """Turn the dictionary of operators and their coefficient arrays A_nondiag into individual ints saying whether or
+    not to use each operator, and coefficient arrays of the same datatype as psi"""
+    if psi.dtype == np.float64:
+        default_coeff = ZEROS_REAL_2D
+    elif psi.dtype == np.float128:
+        default_coeff = ZEROS_COMPLEX_2D
+    else:
+        raise TypeError(psi.dtype)
+    use_gradx[0] = GRADX in A_nondiag
+    use_grady[0] = GRADY in A_nondiag
+    use_grad2x[0] = GRAD2X in A_nondiag
+    use_grad2y[0] = GRAD2Y in A_nondiag
+    use_laplacian[0] = LAPLACIAN in A_nondiag
+
+    gradx_coeff = A_nondiag.get(GRADX, default_coeff)
+    grady_coeff = A_nondiag.get(GRADY, default_coeff)
+    grad2x_coeff = A_nondiag.get(GRAD2X, default_coeff)
+    grad2y_coeff = A_nondiag.get(GRAD2Y, default_coeff)
+    laplacian_coeff = A_nondiag.get(LAPLACIAN, default_coeff)
+
+    if use_gradx[0] and gradx_coeff.dtype != psi.dtype:
+        gradx_coeff = np.array(gradx_coeff, dtype=psi.dtype)
+    if use_grady[0] and grady_coeff.dtype != psi.dtype:
+        grady_coeff = np.array(grady_coeff, dtype=psi.dtype)
+    if use_grad2x[0] and grad2x_coeff.dtype != psi.dtype:
+        grad2x_coeff = np.array(grad2x_coeff, dtype=psi.dtype)
+    if use_grad2y[0] and grad2y_coeff.dtype != psi.dtype:
+        grad2y_coeff = np.array(grad2y_coeff, dtype=psi.dtype)
+    if use_laplacian[0] and laplacian_coeff.dtype != psi.dtype:
+        laplacian_coeff = np.array(laplacian_coeff, dtype=psi.dtype)
+
+    return gradx_coeff, grady_coeff, grad2x_coeff, grad2y_coeff, laplacian_coeff
+
+
+@cython.initializedcheck(False)
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+@cython.cdivision(True)
 cdef inline double_or_complex _grad2x_single_point_interior(
-    int i, int j, double_or_complex [:, :] psi, double over_dx2, int order, int hollow) nogil:
+    int i, int j, double_or_complex [:, :] psi, double over_dx2, int order,
+    int hollow, double_or_complex * diagonal) nogil:
     """Compute the second x derivative at a single point i, j. No bounds
     checking is performed, so one must be sure that i is at least order/2 away
     fromt the edges. 1/dx^2 must be provided. If "hollow" is true, the central
-    point is excluded from the calculation."""
+    point is excluded from the calculation, and 'diagonal' set to the
+    operator's value there."""
     cdef double_or_complex Lx
     Lx = 0
     if order == 2:
-        if not hollow:
+        if hollow:
+            diagonal[0] = D2_2ND_ORDER_0 * over_dx2
+        else:
             # Central point:
             Lx = D2_2ND_ORDER_0 * psi[i, j]
         # Nearest neighbor:
         Lx += D2_2ND_ORDER_1 * (psi[i-1, j] + psi[i+1, j])
     elif order == 4:
-        if not hollow:
+        if hollow:
+            diagonal[0] = D2_4TH_ORDER_0 * over_dx2
+        else:
             # Central point:
             Lx = D2_4TH_ORDER_0 * psi[i, j]
         # Nearest neighbor:
@@ -101,7 +156,9 @@ cdef inline double_or_complex _grad2x_single_point_interior(
         # Next nearest neighbor:
         Lx += D2_4TH_ORDER_2 * (psi[i-2, j] + psi[i+2, j])
     elif order == 6:
-        if not hollow:
+        if hollow:
+            diagonal[0] = D2_6TH_ORDER_0 * over_dx2
+        else:
             # Central point:
             Lx = D2_6TH_ORDER_0 * psi[i, j]
         # Nearest neighbor:
@@ -119,21 +176,27 @@ cdef inline double_or_complex _grad2x_single_point_interior(
 @cython.nonecheck(False)
 @cython.cdivision(True)
 cdef inline double_or_complex _grad2y_single_point_interior(
-    int i, int j, double_or_complex [:, :] psi, double over_dy2, int order, int hollow) nogil:
+    int i, int j, double_or_complex [:, :] psi, double over_dy2, int order,
+    int hollow, double_or_complex * diagonal) nogil:
     """Compute the second y derivative at a single point i, j. No bounds
     checking is performed, so one must be sure that j is at least order/2 away
     fromt the edges. 1/dy^2 must be provided. If "hollow" is true, the central
-    point is excluded from the calculation."""
+    point is excluded from the calculation, and 'diagonal' set to the
+    operator's value there."""
     cdef double_or_complex Ly
     Ly = 0
     if order == 2:
-        if not hollow:
+        if hollow:
+            diagonal[0] = D2_2ND_ORDER_0 * over_dy2
+        else:
             # Central point:
             Ly = D2_2ND_ORDER_0 * psi[i, j]
         # Nearest neighbor:
         Ly += D2_2ND_ORDER_1 * (psi[i, j-1] + psi[i, j+1])
     elif order == 4:
-        if not hollow:
+        if hollow:
+            diagonal[0] = D2_4TH_ORDER_0 * over_dy2
+        else:
             # Central point:
             Ly = D2_4TH_ORDER_0 * psi[i, j]
         # Nearest neighbor:
@@ -141,7 +204,9 @@ cdef inline double_or_complex _grad2y_single_point_interior(
         # Next nearest neighbor:
         Ly += D2_4TH_ORDER_2 * (psi[i, j-2] + psi[i, j+2])
     elif order == 6:
-        if not hollow:
+        if hollow:
+            diagonal[0] = D2_6TH_ORDER_0 * over_dy2
+        else:
             # Central point:
             Ly = D2_6TH_ORDER_0 * psi[i, j]
         # Nearest neighbor:
@@ -159,13 +224,23 @@ cdef inline double_or_complex _grad2y_single_point_interior(
 @cython.nonecheck(False)
 @cython.cdivision(True)
 cdef inline double_or_complex _laplacian_single_point_interior(
-    int i, int j, double_or_complex [:, :] psi, double over_dx2, double over_dy2, int order, int hollow) nogil:
+    int i, int j, double_or_complex [:, :] psi, double over_dx2, double over_dy2, int order,
+    int hollow, double_or_complex * diagonal) nogil:
     """Compute the Laplacian at a single point i, j. No bounds checking is
     performed, so one must be sure that i and j are at least order/2 away
     fromt the edges. 1/dx^2 and 1/dy^2 must be provided. If "hollow" is true,
-    the central point is excluded from the calculation."""
-    return (_grad2x_single_point_interior(i, j, psi, over_dx2, order, hollow) +
-            _grad2y_single_point_interior(i, j, psi, over_dy2, order, hollow))
+    the central point is excluded from the calculation, and 'diagonal'
+    set to the operator's value there."""
+    cdef double_or_complex Lx
+    cdef double_or_complex Ly
+    cdef double_or_complex diagonal_temp = 0
+    Lx = _grad2x_single_point_interior(i, j, psi, over_dx2, order, hollow, &diagonal_temp)
+    if hollow:
+        diagonal[0] = diagonal_temp
+    Ly = _grad2y_single_point_interior(i, j, psi, over_dy2, order, hollow, &diagonal_temp)
+    if hollow:
+        diagonal[0] += diagonal_temp
+    return (Lx + Ly)
 
 
 @cython.initializedcheck(False)
@@ -174,7 +249,7 @@ cdef inline double_or_complex _laplacian_single_point_interior(
 @cython.nonecheck(False)
 @cython.cdivision(True)
 cdef inline void _laplacian_interior(
-     double_or_complex [:, :] psi, double_or_complex [:, :] out, double dx, double dy, int order, int hollow) nogil:
+     double_or_complex [:, :] psi, double_or_complex [:, :] out, double dx, double dy, int order) nogil:
     """Compute the laplacian of the array of a given order finite difference
     scheme. Only operates on interior points, that is, points at least order/2
     points away from the edge of the array."""
@@ -194,23 +269,23 @@ cdef inline void _laplacian_interior(
     cdef double_or_complex Ly_ij
     for i in range(npts_edge, nx - npts_edge):
         for j in range(npts_edge, ny - npts_edge):
-            out[i, j] =  _laplacian_single_point_interior(i, j, psi, over_dx2, over_dy2, order, hollow)
+            out[i, j] =  _laplacian_single_point_interior(i, j, psi, over_dx2, over_dy2, order, 0, NULL)
 
 
 cdef inline void complex_laplacian_interior(
-    double complex [:, :] psi, double complex [:, :] out, double dx, double dy, int order, int hollow) nogil:
-    _laplacian_interior(psi, out, dx, dy, order, hollow)
+    double complex [:, :] psi, double complex [:, :] out, double dx, double dy, int order) nogil:
+    _laplacian_interior(psi, out, dx, dy, order)
 
 cdef inline void real_laplacian_interior(
-     double [:, :] psi, double [:, :] out, double dx, double dy, int order, int hollow) nogil:
-    _laplacian_interior(psi, out, dx, dy, order, hollow)
+     double [:, :] psi, double [:, :] out, double dx, double dy, int order) nogil:
+    _laplacian_interior(psi, out, dx, dy, order)
 
 def laplacian_interior(psi, double dx, double dy):
     out = np.empty(psi.shape, dtype=psi.dtype)
     if psi.dtype == np.float64:
-        real_laplacian_interior(psi, out, dx, dy, order=2, hollow=0)
+        real_laplacian_interior(psi, out, dx, dy, order=2)
     elif psi.dtype == np.complex128:
-        complex_laplacian_interior(psi, out, dx, dy, order=2, hollow=0)
+        complex_laplacian_interior(psi, out, dx, dy, order=2)
     return out
 
 
@@ -222,16 +297,19 @@ def laplacian_interior(psi, double dx, double dy):
 cdef inline double_or_complex _grad2x_single_point_edges(
     int i, int j, int nx, double_or_complex [:, :] psi,
     double_or_complex [:, :] left_buffer, double_or_complex [:, :] right_buffer,
-    double over_dx2, int order, int hollow) nogil:
+    double over_dx2, int order, int hollow, double_or_complex * diagonal) nogil:
     """Compute the second x derivative at a single point i, j near the edges
     of the array such that the buffers neighboring points are required. No
     bounds checking is performed so the caller must ensure that indices are in
     bounds. 1/dx^2 must be provided. If "hollow" is true, the central point is
-    excluded from the calculation."""
+    excluded from the calculation, and 'diagonal' set to the
+    operator's value there."""
     cdef double_or_complex Lx
     Lx = 0
     if order == 2:
-        if not hollow:
+        if hollow:
+            diagonal[0] = D2_2ND_ORDER_0 * over_dx2
+        else:
             # Central point:
             Lx = D2_2ND_ORDER_0 * psi[i, j]
         # Nearest neighbors:
@@ -240,7 +318,9 @@ cdef inline double_or_complex _grad2x_single_point_edges(
         elif i == nx - 1:
             Lx += D2_2ND_ORDER_1 * (psi[i-1, j] + right_buffer[0, j])
     elif order == 4:
-        if not hollow:
+        if hollow:
+            diagonal[0] = D2_4TH_ORDER_0 * over_dx2
+        else:
             # Central point:
             Lx = D2_4TH_ORDER_0 * psi[i, j]
         if i == 0:
@@ -264,7 +344,9 @@ cdef inline double_or_complex _grad2x_single_point_edges(
             # Next nearest neighbor:
             Lx += D2_4TH_ORDER_2 * (psi[i-2, j] + right_buffer[1, j])
     elif order == 6:
-        if not hollow:
+        if hollow:
+            diagonal[0] = D2_6TH_ORDER_0 * over_dx2
+        else:
             # Central point:
             Lx = D2_6TH_ORDER_0 * psi[i, j]
         if i == 0:
@@ -321,16 +403,19 @@ cdef inline double_or_complex _grad2x_single_point_edges(
 cdef inline double_or_complex _grad2y_single_point_edges(
     int i, int j, int ny, double_or_complex [:, :] psi,
     double_or_complex [:, :] bottom_buffer, double_or_complex [:, :] top_buffer,
-    double over_dy2, int order, int hollow):
+    double over_dy2, int order, int hollow, double_or_complex * diagonal) nogil:
     """Compute the second x derivative at a single point i, j near the edges
     of the array such that the buffers neighboring points are required. No
     bounds checking is performed so the caller must ensure that indices are in
     bounds. 1/dx^2 must be provided. If "hollow" is true, the central point is
-    excluded from the calculation."""
+    excluded from the calculation, and 'diagonal' set to the
+    operator's value there."""
     cdef double_or_complex Ly
     Ly = 0
     if order == 2:
-        if not hollow:
+        if hollow:
+            diagonal[0] = D2_2ND_ORDER_0 * over_dy2
+        else:
             # Central point:
             Ly = D2_2ND_ORDER_0 * psi[i, j]
         # Nearest neighbors:
@@ -339,7 +424,9 @@ cdef inline double_or_complex _grad2y_single_point_edges(
         elif j == ny - 1:
             Ly += D2_2ND_ORDER_1 * (psi[i, j-1] + top_buffer[i, 0])
     elif order == 4:
-        if not hollow:
+        if hollow:
+            diagonal[0] = D2_4TH_ORDER_0 * over_dy2
+        else:
             # Central point:
             Ly = D2_4TH_ORDER_0 * psi[i, j]
         if j == 0:
@@ -363,7 +450,9 @@ cdef inline double_or_complex _grad2y_single_point_edges(
             # Next nearest neighbor:
             Ly += D2_4TH_ORDER_2 * (psi[i, j-2] + top_buffer[i, 1])
     elif order == 6:
-        if not hollow:
+        if hollow:
+            diagonal[0] = D2_6TH_ORDER_0 * over_dy2
+        else:
             # Central point:
             Ly = D2_6TH_ORDER_0 * psi[i, j]
         if j == 0:
@@ -408,8 +497,6 @@ cdef inline double_or_complex _grad2y_single_point_edges(
             Ly += D2_6TH_ORDER_2 * (psi[i, j-2] + top_buffer[i, 1])
             # Next next nearest neighbor:
             Ly += D2_6TH_ORDER_3 * (psi[i, j-3] + top_buffer[i, 2])
-    else:
-        print('invalid')
 
     return Ly * over_dy2
 
@@ -422,22 +509,28 @@ cdef inline double_or_complex _laplacian_single_point_edges(
     int i, int j, int nx, int ny, double_or_complex [:, :] psi,
     double_or_complex [:, :] left_buffer, double_or_complex [:, :] right_buffer,
     double_or_complex [:, :] bottom_buffer, double_or_complex [:, :] top_buffer,
-    double over_dx2, double over_dy2, int order, int hollow):
+    double over_dx2, double over_dy2, int order, int hollow, double_or_complex * diagonal) nogil:
     """Compute the Laplacian at a single point i, j. No bounds checking is
     performed, so one must be sure that i and j are at least order/2 away
     fromt the edges. 1/dx^2 and 1/dy^2 must be provided. If "hollow" is true,
-    the central point is excluded from the calculation."""
+    the central point is excluded from the calculation, and 'diagonal'
+    set to the operator's value there."""
     cdef double_or_complex Lx
     cdef double_or_complex Ly
+    cdef double_or_complex diagonal_temp = 0
     cdef int npts = order // 2
     if i < npts or i > nx - npts - 1:
-        Lx = _grad2x_single_point_edges(i, j, nx, psi, left_buffer, right_buffer, over_dx2, order, hollow)
+        Lx = _grad2x_single_point_edges(i, j, nx, psi, left_buffer, right_buffer, over_dx2, order, hollow, &diagonal_temp)
     else:
-        Lx = _grad2x_single_point_interior(i, j, psi, over_dx2, order, hollow)
+        Lx = _grad2x_single_point_interior(i, j, psi, over_dx2, order, hollow, &diagonal_temp)
+    if hollow:
+        diagonal[0] = diagonal_temp
     if j < npts or j > ny - npts - 1:
-        Ly = _grad2y_single_point_edges(i, j, ny, psi, bottom_buffer, top_buffer, over_dy2, order, hollow)
+        Ly = _grad2y_single_point_edges(i, j, ny, psi, bottom_buffer, top_buffer, over_dy2, order, hollow, &diagonal_temp)
     else:
-        Ly = _grad2y_single_point_interior(i, j, psi, over_dy2, order, hollow)
+        Ly = _grad2y_single_point_interior(i, j, psi, over_dy2, order, hollow, &diagonal_temp)
+    if hollow:
+        diagonal[0] += diagonal_temp
     return Lx + Ly
 
 
@@ -451,7 +544,7 @@ cdef inline void _laplacian_edges(
      double_or_complex [:, :] psi, double_or_complex[:, :] out,
      double_or_complex [:, :] left_buffer, double_or_complex [:, :] right_buffer,
      double_or_complex [:, :] bottom_buffer, double_or_complex [:, :] top_buffer,
-     double dx, double dy, int order, int hollow):
+     double dx, double dy, int order):
     """Compute the laplacian of the array of a given order finite difference
     scheme. Only operates on edge points, that is, points at most order/2
     points away from the edge of the array."""
@@ -474,7 +567,7 @@ cdef inline void _laplacian_edges(
     while True:
         out[i, j] =  _laplacian_single_point_edges(i, j, nx, ny, psi,
                                                    left_buffer, right_buffer, bottom_buffer, top_buffer,
-                                                   over_dx2, over_dy2, order, hollow)
+                                                   over_dx2, over_dy2, order, 0, NULL)
         iter_edges(&i, &j, nx, ny, order)
         if i > nx - 1 or j > ny - 1:
             break
@@ -483,21 +576,21 @@ cdef inline void complex_laplacian_edges(
     double complex [:, :] psi, double complex [:, :] out,
     double complex [:, :] left_buffer, double complex [:, :] right_buffer,
     double complex [:, :] bottom_buffer, double complex [:, :] top_buffer,
-    double dx, double dy, int order, int hollow):
-    _laplacian_edges(psi, out, left_buffer, right_buffer, bottom_buffer, top_buffer, dx, dy, order, hollow)
+    double dx, double dy, int order):
+    _laplacian_edges(psi, out, left_buffer, right_buffer, bottom_buffer, top_buffer, dx, dy, order)
 
 cdef inline void real_laplacian_edges(
      double [:, :] psi, double [:, :] out,
      double [:, :] left_buffer, double [:, :] right_buffer,
      double [:, :] bottom_buffer, double [:, :] top_buffer,
-     double dx, double dy, int order, int hollow):
-    _laplacian_edges(psi, out, left_buffer, right_buffer, bottom_buffer, top_buffer, dx, dy, order, hollow)
+     double dx, double dy, int order):
+    _laplacian_edges(psi, out, left_buffer, right_buffer, bottom_buffer, top_buffer, dx, dy, order)
 
 def laplacian_edges(psi, out, left_buffer, right_buffer, bottom_buffer, top_buffer, dx, dy):
     if psi.dtype == np.float64:
-        real_laplacian_edges(psi, out, left_buffer, right_buffer, bottom_buffer, top_buffer, dx, dy, order=2, hollow=0)
+        real_laplacian_edges(psi, out, left_buffer, right_buffer, bottom_buffer, top_buffer, dx, dy, order=2)
     elif psi.dtype == np.complex128:
-        complex_laplacian_edges(psi, out, left_buffer, right_buffer, bottom_buffer, top_buffer, dx, dy, order=2, hollow=0)
+        complex_laplacian_edges(psi, out, left_buffer, right_buffer, bottom_buffer, top_buffer, dx, dy, order=2)
     return out
 
 
@@ -508,8 +601,12 @@ def laplacian_edges(psi, out, left_buffer, right_buffer, bottom_buffer, top_buff
 @cython.cdivision(True)
 cdef inline void _SOR_step_interior(double_or_complex [:, :] psi, double_or_complex [:, :] A_diag,
                                     double_or_complex [:, :] b, double dx, double dy, double relaxation_parameter,
-                                    int use_laplacian, double_or_complex [:, :] laplacian_coefficient,
-                                    double * squared_error_ptr, int compute_error) nogil:
+                                    int use_gradx, double_or_complex [:, :] gradx_coeff,
+                                    int use_grady, double_or_complex [:, :] grady_coeff,
+                                    int use_grad2x, double_or_complex [:, :] grad2x_coeff,
+                                    int use_grad2y, double_or_complex [:, :] grad2y_coeff,
+                                    int use_laplacian, double_or_complex [:, :] laplacian_coeff,
+                                    int operator_order, double * squared_error_ptr, int compute_error) nogil:
     cdef int i
     cdef int j
     cdef int i_prime = 0
@@ -519,45 +616,49 @@ cdef inline void _SOR_step_interior(double_or_complex [:, :] psi, double_or_comp
     nx = psi.shape[0]
     ny = psi.shape[1]
 
-    cdef int laplacian_coefficient_has_x = laplacian_coefficient.shape[0] > 1
-    cdef int laplacian_coefficient_has_y = laplacian_coefficient.shape[1] > 1
+    cdef int laplacian_coeff_has_x = laplacian_coeff.shape[0] > 1
+    cdef int laplacian_coeff_has_y = laplacian_coeff.shape[1] > 1
 
     cdef double over_dx2 = 1/dx**2
     cdef double over_dy2 = 1/dy**2
     cdef double residual
 
+    cdef double_or_complex operator_coeff
+    cdef double_or_complex operator_diag
+    cdef double_or_complex hollow_operator_result
     cdef double_or_complex A_hollow_psi
     cdef double_or_complex A_diag_total
     cdef double_or_complex psi_GS
 
     for i in range(1, nx - 1):
         for j in range(1, ny - 1):
-            # Only index the laplacian coefficient array in the directions it varies:
-            if laplacian_coefficient_has_x:
-                i_prime = i
-            if laplacian_coefficient_has_y:
-                j_prime = j
             # Compute the total diagonals of A. This is the sum of the
             # diagonal operator given by the user, and the diagonals of the
-            # non-diagonal operators (currently only the Laplacian
-            # implemented):
+            # non-diagonal operators:
             A_diag_total = A_diag[i, j]
-            if use_laplacian:
-                A_diag_total -= 2*laplacian_coefficient[i_prime, j_prime]*(over_dx2 + over_dy2)
-
-            # Compute the off diagonals of A, operating on psi:
+            # Compute the result of A*psi excluding the diagonals:
             A_hollow_psi = 0
             if use_laplacian:
-                A_hollow_psi += laplacian_coefficient[i_prime, j_prime]*(psi[i-1, j] + psi[i+1, j])*over_dx2
-                A_hollow_psi += laplacian_coefficient[i_prime, j_prime]*(psi[i, j-1] + psi[i, j+1])*over_dy2
+                # Only index the operator in the directions it varies:
+                if laplacian_coeff_has_x:
+                    i_prime = i
+                if laplacian_coeff_has_y:
+                    j_prime = j
+                operator_coeff = laplacian_coeff[i_prime, j_prime]
+                hollow_operator_result = _laplacian_single_point_interior(
+                                             i, j, psi, over_dx2, over_dy2, operator_order, 1, &operator_diag)
+                A_hollow_psi += operator_coeff * hollow_operator_result
+                A_diag_total += operator_coeff * operator_diag
 
             if compute_error:
                 # Add the squared residuals of the existing solution to the total:
                 residual = cabs(A_hollow_psi + A_diag_total*psi[i, j] - b[i, j])
                 squared_error_ptr[0] = squared_error_ptr[0] + residual*residual
 
-            # The Gauss-Seidel prediction for psi:
+            # The Gauss-Seidel prediction for psi at this point:
             psi_GS = (b[i, j] - A_hollow_psi)/A_diag_total
+
+            # Update psi with overrelaxation at this point:
             psi[i, j] = psi[i, j] + relaxation_parameter*(psi_GS - psi[i, j])
 
 
@@ -569,10 +670,14 @@ cdef inline void _SOR_step_interior(double_or_complex [:, :] psi, double_or_comp
 @cython.cdivision(True)
 cdef inline void _SOR_step_edges(double_or_complex [:, :] psi, double_or_complex [:, :] A_diag,
                                     double_or_complex [:, :] b, double dx, double dy, double relaxation_parameter,
-                                    int use_laplacian, double_or_complex [:, :] laplacian_coefficient,
-                                    double_or_complex[:, :] left_edge_buffer, double_or_complex[:, :] right_edge_buffer,
-                                    double_or_complex[:, :] bottom_edge_buffer, double_or_complex[:, :] top_edge_buffer,
-                                    double * squared_error_ptr, int compute_error) nogil:
+                                    int use_gradx, double_or_complex [:, :] gradx_coeff,
+                                    int use_grady, double_or_complex [:, :] grady_coeff,
+                                    int use_grad2x, double_or_complex [:, :] grad2x_coeff,
+                                    int use_grad2y, double_or_complex [:, :] grad2y_coeff,
+                                    int use_laplacian, double_or_complex [:, :] laplacian_coeff,
+                                    double_or_complex[:, :] left_buffer, double_or_complex[:, :] right_buffer,
+                                    double_or_complex[:, :] bottom_buffer, double_or_complex[:, :] top_buffer,
+                                    int operator_order, double * squared_error_ptr, int compute_error):
     cdef int i
     cdef int j
     cdef int i_prime = 0
@@ -582,180 +687,167 @@ cdef inline void _SOR_step_edges(double_or_complex [:, :] psi, double_or_complex
     nx = psi.shape[0]
     ny = psi.shape[1]
 
-    cdef int laplacian_coefficient_has_x = laplacian_coefficient.shape[0] > 1
-    cdef int laplacian_coefficient_has_y = laplacian_coefficient.shape[1] > 1
+    cdef int laplacian_coeff_has_x = laplacian_coeff.shape[0] > 1
+    cdef int laplacian_coeff_has_y = laplacian_coeff.shape[1] > 1
 
     cdef double over_dx2 = 1/dx**2
     cdef double over_dy2 = 1/dy**2
     cdef double residual
 
+    cdef double_or_complex operator_coeff
+    cdef double_or_complex operator_diag
+    cdef double_or_complex hollow_operator_result
     cdef double_or_complex A_hollow_psi
     cdef double_or_complex A_diag_total
     cdef double_or_complex psi_GS
-
-    cdef double_or_complex psi_left
-    cdef double_or_complex psi_right
-    cdef double_or_complex psi_top
-    cdef double_or_complex psi_bottom
-
-
-    # Start in the lower left corner:
     i = 0
     j = 0
     while True:
-        if i == 0:
-            psi_left = left_edge_buffer[0, j]
-        else:
-            psi_left = psi[i - 1, j]
-        if i == nx - 1:
-            psi_right = right_edge_buffer[0, j]
-        else:
-            psi_right = psi[i + 1, j]
-        if j == 0:
-            psi_bottom = bottom_edge_buffer[i, 0]
-        else:
-            psi_bottom = psi[i, j - 1]
-        if j == ny - 1:
-            psi_top = top_edge_buffer[i, 0]
-        else:
-            psi_top = psi[i, j + 1]
-
-        # Only index the laplacian coefficient array in the directions it varies:
-        if laplacian_coefficient_has_x:
-            i_prime = i
-        if laplacian_coefficient_has_y:
-            j_prime = j
         # Compute the total diagonals of A. This is the sum of the
         # diagonal operator given by the user, and the diagonals of the
-        # non-diagonal operators (currently only the Laplacian
-        # implemented):
+        # non-diagonal operators:
         A_diag_total = A_diag[i, j]
-        if use_laplacian:
-            A_diag_total -= 2*laplacian_coefficient[i_prime, j_prime]*(over_dx2 + over_dy2)
-
-        # Compute the off diagonals of A, operating on psi:
+        # Compute the result of A*psi excluding the diagonals:
         A_hollow_psi = 0
         if use_laplacian:
-            A_hollow_psi += laplacian_coefficient[i_prime, j_prime]*(psi_left + psi_right)*over_dx2
-            A_hollow_psi += laplacian_coefficient[i_prime, j_prime]*(psi_bottom + psi_top)*over_dy2
+            if laplacian_coeff_has_x:
+                i_prime = i
+            if laplacian_coeff_has_y:
+                j_prime = j
+            operator_coeff = laplacian_coeff[i_prime, j_prime]
+            hollow_operator_result = _laplacian_single_point_edges(
+                                         i, j, nx, ny, psi, left_buffer, right_buffer, bottom_buffer, top_buffer,
+                                         over_dx2, over_dy2, operator_order, 1, &operator_diag)
+            A_hollow_psi += operator_coeff * hollow_operator_result
+            A_diag_total += operator_coeff * operator_diag
 
         if compute_error:
             # Add the squared residuals of the existing solution to the total:
             residual = cabs(A_hollow_psi + A_diag_total*psi[i, j] - b[i, j])
             squared_error_ptr[0] = squared_error_ptr[0] + residual*residual
 
-        # The Gauss-Seidel prediction for psi:
+        # The Gauss-Seidel prediction for psi at this point:
         psi_GS = (b[i, j] - A_hollow_psi)/A_diag_total
+
+        # Update psi with overrelaxation at this point:
         psi[i, j] = psi[i, j] + relaxation_parameter*(psi_GS - psi[i, j])
 
-        # Run up the left edge:
-        if i == 0 and j < ny - 1:
-            j += 1
-        # Then go to to lower right corner:
-        elif i == 0 and j == ny - 1:
-            i = nx - 1
-            j = 0
-        # And run up the right edge:
-        elif i == nx - 1 and  j < ny - 1:
-            j += 1
-        # Then jump one point to the right of the lower left corner:
-        elif i == nx - 1 and j == ny - 1:
-            i = 1
-            j = 0
-        # And run along the bottom edge, stopping short one point short of the
-        # lower right corner:
-        elif j == 0 and i < nx - 2:
-            i += 1
-        # Then jump one point to the right of the top edge:
-        elif j == 0 and i == nx - 2:
-            i = 1
-            j = ny - 1
-        # And run along the top edge, stopping short one point short of the
-        # upper right corner:
-        elif j == ny - 1 and i < nx - 2:
-            i += 1
-        else:
-            # Done!
+        iter_edges(&i, &j, nx, ny, 2)
+        if i > nx - 1 or j > ny - 1:
             break
 
 
 cdef inline void _SOR_step_interior_complex(double complex [:, :] psi, double complex [:, :] A_diag,
                                     double complex [:, :] b, double dx, double dy, double relaxation_parameter,
-                                    int use_laplacian, double complex [:, :] laplacian_coefficient,
-                                    double * squared_error_ptr, int compute_error) nogil:
-    _SOR_step_interior(psi, A_diag, b, dx, dy, relaxation_parameter, use_laplacian, laplacian_coefficient,
-                       squared_error_ptr, compute_error)
+                                    int use_gradx, double complex [:, :] gradx_coeff,
+                                    int use_grady, double complex [:, :] grady_coeff,
+                                    int use_grad2x, double complex [:, :] grad2x_coeff,
+                                    int use_grad2y, double complex [:, :] grad2y_coeff,
+                                    int use_laplacian, double complex [:, :] laplacian_coeff,
+                                    int operator_order, double * squared_error_ptr, int compute_error) nogil:
+    _SOR_step_interior(psi, A_diag, b, dx, dy, relaxation_parameter,
+                       use_gradx, gradx_coeff, use_grady, grady_coeff,
+                       use_grad2x, grad2x_coeff, use_grad2y, grad2y_coeff, use_laplacian, laplacian_coeff,
+                       operator_order, squared_error_ptr, compute_error)
 
 
 cdef inline void _SOR_step_interior_real(double [:, :] psi, double [:, :] A_diag,
                                     double [:, :] b, double dx, double dy, double relaxation_parameter,
-                                    int use_laplacian, double [:, :] laplacian_coefficient,
-                                    double * squared_error_ptr, int compute_error) nogil:
-    _SOR_step_interior(psi, A_diag, b, dx, dy, relaxation_parameter, use_laplacian, laplacian_coefficient,
-                       squared_error_ptr, compute_error)
+                                    int use_gradx, double [:, :] gradx_coeff, int use_grady, double [:, :] grady_coeff,
+                                    int use_grad2x, double [:, :] grad2x_coeff, int use_grad2y, double [:, :] grad2y_coeff,
+                                    int use_laplacian, double [:, :] laplacian_coeff,
+                                    int operator_order, double * squared_error_ptr, int compute_error) nogil:
+    _SOR_step_interior(psi, A_diag, b, dx, dy, relaxation_parameter,
+                       use_gradx, gradx_coeff, use_grady, grady_coeff,
+                       use_grad2x, grad2x_coeff, use_grad2y, grad2y_coeff, use_laplacian, laplacian_coeff,
+                       operator_order, squared_error_ptr, compute_error)
 
 cdef inline void _SOR_step_edges_complex(double complex [:, :] psi, double complex [:, :] A_diag,
                                     double complex [:, :] b, double dx, double dy, double relaxation_parameter,
-                                    int use_laplacian, double complex [:, :] laplacian_coefficient,
-                                    double complex [:, :] left_edge_buffer, double complex [:, :] right_edge_buffer,
-                                    double complex [:, :] bottom_edge_buffer, double complex [:, :] top_edge_buffer,
-                                    double * squared_error_ptr, int compute_error) nogil:
-    _SOR_step_edges(psi, A_diag, b, dx, dy, relaxation_parameter, use_laplacian, laplacian_coefficient,
-                    left_edge_buffer, right_edge_buffer, bottom_edge_buffer, top_edge_buffer, squared_error_ptr,
-                    compute_error)
+                                    int use_gradx, double complex [:, :] gradx_coeff,
+                                    int use_grady, double complex [:, :] grady_coeff,
+                                    int use_grad2x, double complex [:, :] grad2x_coeff,
+                                    int use_grad2y, double complex [:, :] grad2y_coeff,
+                                    int use_laplacian, double complex [:, :] laplacian_coeff,
+                                    double complex [:, :] left_buffer, double complex [:, :] right_buffer,
+                                    double complex [:, :] bottom_buffer, double complex [:, :] top_buffer,
+                                    int operator_order, double * squared_error_ptr, int compute_error):
+    _SOR_step_edges(psi, A_diag, b, dx, dy, relaxation_parameter,
+                    use_gradx, gradx_coeff, use_grady, grady_coeff,
+                    use_grad2x, grad2x_coeff, use_grad2y, grad2y_coeff, use_laplacian, laplacian_coeff,
+                    left_buffer, right_buffer, bottom_buffer, top_buffer,
+                    operator_order, squared_error_ptr, compute_error)
 
 cdef inline void _SOR_step_edges_real(double [:, :] psi, double [:, :] A_diag,
                                     double [:, :] b, double dx, double dy, double relaxation_parameter,
-                                    int use_laplacian, double [:, :] laplacian_coefficient,
-                                    double [:, :] left_edge_buffer, double [:, :] right_edge_buffer,
-                                    double [:, :] bottom_edge_buffer, double [:, :] top_edge_buffer,
-                                    double * squared_error_ptr, int compute_error) nogil:
-    _SOR_step_edges(psi, A_diag, b, dx, dy, relaxation_parameter, use_laplacian, laplacian_coefficient,
-                    left_edge_buffer, right_edge_buffer, bottom_edge_buffer, top_edge_buffer, squared_error_ptr,
-                    compute_error)
+                                    int use_gradx, double [:, :] gradx_coeff, int use_grady, double [:, :] grady_coeff,
+                                    int use_grad2x, double [:, :] grad2x_coeff, int use_grad2y, double [:, :] grad2y_coeff,
+                                    int use_laplacian, double [:, :] laplacian_coeff,
+                                    double [:, :] left_buffer, double [:, :] right_buffer,
+                                    double [:, :] bottom_buffer, double [:, :] top_buffer,
+                                    int operator_order, double * squared_error_ptr, int compute_error):
+    _SOR_step_edges(psi, A_diag, b, dx, dy, relaxation_parameter,
+                    use_gradx, gradx_coeff, use_grady, grady_coeff,
+                    use_grad2x, grad2x_coeff, use_grad2y, grad2y_coeff, use_laplacian, laplacian_coeff,
+                    left_buffer, right_buffer, bottom_buffer, top_buffer,
+                    operator_order, squared_error_ptr, compute_error)
 
 
-def SOR_step_interior(psi, A_diag, A_nondiag, b, dx, dy, relaxation_parameter, compute_error):
-    cdef int use_laplacian = LAPLACIAN in A_nondiag
-    cdef double squared_error = 0
+def SOR_step_interior(psi, A_diag, A_nondiag, b, dx, dy, relaxation_parameter, operator_order, compute_error):
+    cdef int use_gradx
+    cdef int use_grady
+    cdef int use_grad2x
+    cdef int use_grad2y
+    cdef int use_laplacian
     cdef int compute_error_cint = compute_error
-    if use_laplacian:
-        laplacian_coefficient = A_nondiag[LAPLACIAN]
-    else:
-        laplacian_coefficient = EMPTY_2D_ARRAY
+    cdef double squared_error = 0
+
+    gradx_coeff, grady_coeff, grad2x_coeff, grad2y_coeff, laplacian_coeff = process_operators(
+        psi, A_nondiag, &use_gradx, &use_grady, &use_grad2x, &use_grad2y, &use_laplacian)
+
     if psi.dtype == np.complex128:
-        if laplacian_coefficient.dtype == np.float64:
-            laplacian_coefficient = np.array(laplacian_coefficient, dtype=complex)
         if A_diag.dtype == np.float64:
             A_diag = np.array(A_diag, dtype=complex)
-        _SOR_step_interior_complex(psi, A_diag, b, dx, dy, relaxation_parameter, use_laplacian, laplacian_coefficient,
-                                   &squared_error, compute_error_cint)
+        _SOR_step_interior_complex(psi, A_diag, b, dx, dy, relaxation_parameter,
+                                   use_gradx, gradx_coeff, use_grady, grady_coeff,
+                                   use_grad2x, grad2x_coeff, use_grad2y, grad2y_coeff, use_laplacian, laplacian_coeff,
+                                   operator_order, &squared_error, compute_error_cint)
     elif psi.dtype == np.float64:
-        _SOR_step_interior_real(psi, A_diag, b, dx, dy, relaxation_parameter, use_laplacian, laplacian_coefficient,
-                                &squared_error, compute_error_cint)
+        _SOR_step_interior_real(psi, A_diag, b, dx, dy, relaxation_parameter,
+                                use_gradx, gradx_coeff, use_grady, grady_coeff,
+                                use_grad2x, grad2x_coeff, use_grad2y, grad2y_coeff, use_laplacian, laplacian_coeff,
+                                operator_order, &squared_error, compute_error_cint)
 
     return float(squared_error)
 
+
 def SOR_step_edges(psi, A_diag, A_nondiag, b, dx, dy, relaxation_parameter,
-                   left_edge_buffer, right_edge_buffer, bottom_edge_buffer, top_edge_buffer, squared_error, compute_error):
-    cdef int use_laplacian = LAPLACIAN in A_nondiag
+                   left_buffer, right_buffer, bottom_buffer, top_buffer,
+                   operator_order, squared_error, compute_error):
+    cdef int use_gradx
+    cdef int use_grady
+    cdef int use_grad2x
+    cdef int use_grad2y
+    cdef int use_laplacian
     cdef int compute_error_cint = compute_error
     cdef double squared_error_cdouble = squared_error
-    if use_laplacian:
-        laplacian_coefficient = A_nondiag[LAPLACIAN]
-    else:
-        laplacian_coefficient = EMPTY_2D_ARRAY
+
+    gradx_coeff, grady_coeff, grad2x_coeff, grad2y_coeff, laplacian_coeff = process_operators(
+        psi, A_nondiag, &use_gradx, &use_grady, &use_grad2x, &use_grad2y, &use_laplacian)
+
     if psi.dtype == np.complex128:
-        if laplacian_coefficient.dtype == np.float64:
-            laplacian_coefficient = np.array(laplacian_coefficient, dtype=complex)
         if A_diag.dtype == np.float64:
             A_diag = np.array(A_diag, dtype=complex)
-        _SOR_step_edges_complex(psi, A_diag, b, dx, dy, relaxation_parameter, use_laplacian, laplacian_coefficient,
-                                left_edge_buffer, right_edge_buffer, bottom_edge_buffer, top_edge_buffer,
-                                &squared_error_cdouble, compute_error_cint)
+        _SOR_step_edges_complex(psi, A_diag, b, dx, dy, relaxation_parameter,
+                                use_gradx, gradx_coeff, use_grady, grady_coeff,
+                                use_grad2x, grad2x_coeff, use_grad2y, grad2y_coeff, use_laplacian, laplacian_coeff,
+                                left_buffer, right_buffer, bottom_buffer, top_buffer,
+                                operator_order, &squared_error_cdouble, compute_error_cint)
     elif psi.dtype == np.float64:
-        _SOR_step_edges_real(psi, A_diag, b, dx, dy, relaxation_parameter, use_laplacian, laplacian_coefficient,
-                             left_edge_buffer, right_edge_buffer, bottom_edge_buffer, top_edge_buffer,
-                             &squared_error_cdouble, compute_error_cint)
+        _SOR_step_edges_real(psi, A_diag, b, dx, dy, relaxation_parameter,
+                             use_gradx, gradx_coeff, use_grady, grady_coeff,
+                             use_grad2x, grad2x_coeff, use_grad2y, grad2y_coeff, use_laplacian, laplacian_coeff,
+                             left_buffer, right_buffer, bottom_buffer, top_buffer,
+                             operator_order, &squared_error_cdouble, compute_error_cint)
     return float(squared_error_cdouble)
 
