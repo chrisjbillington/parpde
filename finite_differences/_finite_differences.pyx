@@ -280,12 +280,12 @@ cdef inline void real_laplacian_interior(
      double [:, :] psi, double [:, :] out, double dx, double dy, int order) nogil:
     _laplacian_interior(psi, out, dx, dy, order)
 
-def laplacian_interior(psi, double dx, double dy):
+def laplacian_interior(psi, double dx, double dy, order):
     out = np.empty(psi.shape, dtype=psi.dtype)
     if psi.dtype == np.float64:
-        real_laplacian_interior(psi, out, dx, dy, order=2)
+        real_laplacian_interior(psi, out, dx, dy, order)
     elif psi.dtype == np.complex128:
-        complex_laplacian_interior(psi, out, dx, dy, order=2)
+        complex_laplacian_interior(psi, out, dx, dy, order)
     return out
 
 
@@ -369,7 +369,7 @@ cdef inline double_or_complex _grad2x_single_point_edges(
             # Next nearest neighbor:
             Lx += D2_6TH_ORDER_2 * (psi[i-2, j] + psi[i+2, j])
             # Next next nearest neighbor:
-            Lx += D2_6TH_ORDER_3 * (left_buffer[0, j] + psi[i+3, j])
+            Lx += D2_6TH_ORDER_3 * (left_buffer[2, j] + psi[i+3, j])
         elif i == nx - 3:
             # Nearest neighbor:
             Lx += D2_6TH_ORDER_1 * (psi[i-1, j] +  psi[i+1, j])
@@ -475,7 +475,7 @@ cdef inline double_or_complex _grad2y_single_point_edges(
             # Next nearest neighbor:
             Ly += D2_6TH_ORDER_2 * (psi[i, j-2] + psi[i, j+2])
             # Next next nearest neighbor:
-            Ly += D2_6TH_ORDER_3 * (bottom_buffer[i, 0] + psi[i, j+3])
+            Ly += D2_6TH_ORDER_3 * (bottom_buffer[i, 2] + psi[i, j+3])
         elif j == ny - 3:
             # Nearest neighbor:
             Ly += D2_6TH_ORDER_1 * (psi[i, j-1] +  psi[i, j+1])
@@ -586,11 +586,11 @@ cdef inline void real_laplacian_edges(
      double dx, double dy, int order):
     _laplacian_edges(psi, out, left_buffer, right_buffer, bottom_buffer, top_buffer, dx, dy, order)
 
-def laplacian_edges(psi, out, left_buffer, right_buffer, bottom_buffer, top_buffer, dx, dy):
+def laplacian_edges(psi, out, left_buffer, right_buffer, bottom_buffer, top_buffer, dx, dy, order):
     if psi.dtype == np.float64:
-        real_laplacian_edges(psi, out, left_buffer, right_buffer, bottom_buffer, top_buffer, dx, dy, order=2)
+        real_laplacian_edges(psi, out, left_buffer, right_buffer, bottom_buffer, top_buffer, dx, dy, order)
     elif psi.dtype == np.complex128:
-        complex_laplacian_edges(psi, out, left_buffer, right_buffer, bottom_buffer, top_buffer, dx, dy, order=2)
+        complex_laplacian_edges(psi, out, left_buffer, right_buffer, bottom_buffer, top_buffer, dx, dy, order)
     return out
 
 
@@ -623,6 +623,8 @@ cdef inline void _SOR_step_interior(double_or_complex [:, :] psi, double_or_comp
     cdef double over_dy2 = 1/dy**2
     cdef double residual
 
+    cdef int npts_edge = operator_order // 2
+
     cdef double_or_complex operator_coeff
     cdef double_or_complex operator_diag
     cdef double_or_complex hollow_operator_result
@@ -630,8 +632,8 @@ cdef inline void _SOR_step_interior(double_or_complex [:, :] psi, double_or_comp
     cdef double_or_complex A_diag_total
     cdef double_or_complex psi_GS
 
-    for i in range(1, nx - 1):
-        for j in range(1, ny - 1):
+    for i in range(npts_edge, nx - npts_edge):
+        for j in range(npts_edge, ny - npts_edge):
             # Compute the total diagonals of A. This is the sum of the
             # diagonal operator given by the user, and the diagonals of the
             # non-diagonal operators:
@@ -732,7 +734,7 @@ cdef inline void _SOR_step_edges(double_or_complex [:, :] psi, double_or_complex
         # Update psi with overrelaxation at this point:
         psi[i, j] = psi[i, j] + relaxation_parameter*(psi_GS - psi[i, j])
 
-        iter_edges(&i, &j, nx, ny, 2)
+        iter_edges(&i, &j, nx, ny, operator_order)
         if i > nx - 1 or j > ny - 1:
             break
 

@@ -272,8 +272,8 @@ class Simulator2D(object):
         """Start an asynchronous MPI send data from the edges of psi to all
         adjacent MPI processes. order is the order of derivative operator
         facilitated by the transfer, order/2 points at each edges are sent."""
-        if order > 2:
-            raise NotImplementedError("Only second order finite differences implemented")
+        # if order > 2:
+        #     raise NotImplementedError("Only second order finite differences implemented")
         left_buffer, right_buffer, bottom_buffer, top_buffer = self.MPI_send_buffers[psi.dtype.type, order]
         npts = order // 2
         left_buffer[:] = psi[:npts, :]
@@ -302,13 +302,14 @@ class Simulator2D(object):
     def par_laplacian_init(self, psi, order=2):
         self.MPI_send_at_edges(psi, order)
         # Compute laplacian on internal elements:
-        result = laplacian_interior(psi, self.dx, self.dy)
+        result = laplacian_interior(psi, self.dx, self.dy, order)
         return result
 
     def par_laplacian_finalise(self, psi, result, order=2):
         self.MPI_receive_at_edges()
         left_buffer, right_buffer, bottom_buffer, top_buffer = self.MPI_receive_buffers[result.dtype.type, order]
-        result = laplacian_edges(psi, result, left_buffer, right_buffer, bottom_buffer, top_buffer, self.dx, self.dy)
+        result = laplacian_edges(psi, result, left_buffer, right_buffer, bottom_buffer, top_buffer,
+                                 self.dx, self.dy, order)
         return result
 
     def par_laplacian(self, psi, order=2):
@@ -367,7 +368,7 @@ class HDFOutput(object):
                 simulator.global_first_x_index, simulator.global_first_y_index, simulator.nx, simulator.ny)
         MPI_geometry_dset[0] = data
 
-    def save(self, psi, output_log_data):
+    def save(self, psi, output_log_data, flush=True):
         if not 'psi' in self.file:
             self.file.create_dataset('psi', (0,) + self.simulator.shape,
                                      maxshape=(None,) + self.simulator.shape,
@@ -381,6 +382,8 @@ class HDFOutput(object):
         psi_dataset = self.file['psi']
         psi_dataset.resize((len(psi_dataset) + 1,) + psi_dataset.shape[1:])
         psi_dataset[-1] = psi
+        if flush:
+            self.file.flush()
 
     @staticmethod
     def iterframes(directory, start_frame=0, n_frames=None):

@@ -59,11 +59,11 @@ def H(t, psi):
     """The Hamiltonian for single-component wavefunction psi. Returns the
     kinetic term acting on psi and the local terms (not acting on psi)
     separately."""
-    grad2psi = simulator.par_laplacian_init(psi)
+    grad2psi = simulator.par_laplacian_init(psi, order=ORDER)
     n = abs(psi)**2
     H_local_lin = V
     H_local_nonlin = g * n
-    grad2psi = simulator.par_laplacian_finalise(psi, grad2psi)
+    grad2psi = simulator.par_laplacian_finalise(psi, grad2psi, order=ORDER)
     K_psi = -hbar**2/(2*m)*grad2psi
     return K_psi, H_local_lin, H_local_nonlin
 
@@ -86,9 +86,10 @@ if __name__ == '__main__':
     psi[psi < 0] = 0
     psi = np.sqrt(psi)
 
+    ORDER = 6
     # Find the groundstate:
     psi = bec2d.find_groundstate(groundstate_system, H, mu, psi,
-                                 relaxation_parameter=1.7, convergence=1e-13, operator_order=2,
+                                 relaxation_parameter=1.7, convergence=1e-13, operator_order=ORDER,
                                  output_interval=100, output_directory='groundstate', convergence_check_interval=10)
 
     # psi is real so far, convert it to complex:
