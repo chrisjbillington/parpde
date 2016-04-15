@@ -118,7 +118,7 @@ def get_best_2D_segmentation(size_x, size_y, N_segments):
 
 class Simulator2D(object):
     def __init__(self, x_min_global, x_max_global, y_min_global, y_max_global, nx_global, ny_global,
-                 periodic_x=False, periodic_y=False):
+                 periodic_x=False, periodic_y=False, operator_order=4):
         """A class for solving partial differential equations in two dimensions on
         multiple cores using MPI"""
         self.x_min_global = x_min_global
@@ -129,7 +129,11 @@ class Simulator2D(object):
         self.ny_global = ny_global
         self.periodic_x = periodic_x
         self.periodic_y = periodic_y
-
+        self.order = operator_order
+        self.n_edge_pts = self.order // 2
+        if not self.order in [2, 4, 6]:
+            msg = "Only differential operators of order 2, 4, 6 supported."
+            raise ValueError(msg)
         self.global_shape = (self.nx_global, self.ny_global)
 
         self._setup_MPI_grid()
@@ -227,60 +231,51 @@ class Simulator2D(object):
 
         # Buffers and MPI request objects for sending and receiving data to
         # and from other processes. Sorted by whether the datatype is real or
-        # complex, and by the order of differential operator that they
-        # facilitate - for example, 2nd order derivatives require sending only
-        # one point at edges, whereas 4th order derivatives require sending
-        # two.
+        # complex.
         self.MPI_send_buffers = {}
         self.MPI_receive_buffers = {}
         self.MPI_requests = {}
         for dtype in [np.float64, np.complex128]:
-            for order in [2, 4, 6]:
-                x_edge_shape = (order//2, self.ny)
-                y_edge_shape = (self.nx, order//2)
-                left_send_buffer = np.zeros(x_edge_shape, dtype=dtype)
-                left_receive_buffer = np.zeros(x_edge_shape, dtype=dtype)
-                right_send_buffer = np.zeros(x_edge_shape, dtype=dtype)
-                right_receive_buffer = np.zeros(x_edge_shape, dtype=dtype)
-                bottom_send_buffer = np.zeros(y_edge_shape, dtype=dtype)
-                bottom_receive_buffer = np.zeros(y_edge_shape, dtype=dtype)
-                top_send_buffer = np.zeros(y_edge_shape, dtype=dtype)
-                top_receive_buffer = np.zeros(y_edge_shape, dtype=dtype)
+            x_edge_shape = (self.n_edge_pts, self.ny)
+            y_edge_shape = (self.nx, self.n_edge_pts)
+            left_send_buffer = np.zeros(x_edge_shape, dtype=dtype)
+            left_receive_buffer = np.zeros(x_edge_shape, dtype=dtype)
+            right_send_buffer = np.zeros(x_edge_shape, dtype=dtype)
+            right_receive_buffer = np.zeros(x_edge_shape, dtype=dtype)
+            bottom_send_buffer = np.zeros(y_edge_shape, dtype=dtype)
+            bottom_receive_buffer = np.zeros(y_edge_shape, dtype=dtype)
+            top_send_buffer = np.zeros(y_edge_shape, dtype=dtype)
+            top_receive_buffer = np.zeros(y_edge_shape, dtype=dtype)
 
 
-                send_left = self.MPI_comm.Send_init(left_send_buffer, self.MPI_rank_left, tag=TAG_RIGHT_TO_LEFT)
-                send_right = self.MPI_comm.Send_init(right_send_buffer, self.MPI_rank_right, tag=TAG_LEFT_TO_RIGHT)
-                send_bottom = self.MPI_comm.Send_init(bottom_send_buffer, self.MPI_rank_down, tag=TAG_UP_TO_DOWN)
-                send_top = self.MPI_comm.Send_init(top_send_buffer, self.MPI_rank_up, tag=TAG_DOWN_TO_UP)
-                receive_left = self.MPI_comm.Recv_init(left_receive_buffer, self.MPI_rank_left, tag=TAG_LEFT_TO_RIGHT)
-                receive_right = self.MPI_comm.Recv_init(right_receive_buffer, self.MPI_rank_right, tag=TAG_RIGHT_TO_LEFT)
-                receive_bottom = self.MPI_comm.Recv_init(bottom_receive_buffer, self.MPI_rank_down, tag=TAG_DOWN_TO_UP)
-                receive_top = self.MPI_comm.Recv_init(top_receive_buffer, self.MPI_rank_up, tag=TAG_UP_TO_DOWN)
+            send_left = self.MPI_comm.Send_init(left_send_buffer, self.MPI_rank_left, tag=TAG_RIGHT_TO_LEFT)
+            send_right = self.MPI_comm.Send_init(right_send_buffer, self.MPI_rank_right, tag=TAG_LEFT_TO_RIGHT)
+            send_bottom = self.MPI_comm.Send_init(bottom_send_buffer, self.MPI_rank_down, tag=TAG_UP_TO_DOWN)
+            send_top = self.MPI_comm.Send_init(top_send_buffer, self.MPI_rank_up, tag=TAG_DOWN_TO_UP)
+            receive_left = self.MPI_comm.Recv_init(left_receive_buffer, self.MPI_rank_left, tag=TAG_LEFT_TO_RIGHT)
+            receive_right = self.MPI_comm.Recv_init(right_receive_buffer, self.MPI_rank_right, tag=TAG_RIGHT_TO_LEFT)
+            receive_bottom = self.MPI_comm.Recv_init(bottom_receive_buffer, self.MPI_rank_down, tag=TAG_DOWN_TO_UP)
+            receive_top = self.MPI_comm.Recv_init(top_receive_buffer, self.MPI_rank_up, tag=TAG_UP_TO_DOWN)
 
-                self.MPI_send_buffers[dtype, order] = (left_send_buffer, right_send_buffer,
-                                                       bottom_send_buffer, top_send_buffer)
+            self.MPI_send_buffers[dtype] = (left_send_buffer, right_send_buffer, bottom_send_buffer, top_send_buffer)
 
-                self.MPI_receive_buffers[dtype, order] = (left_receive_buffer, right_receive_buffer,
-                                                          bottom_receive_buffer, top_receive_buffer)
+            self.MPI_receive_buffers[dtype] = (left_receive_buffer, right_receive_buffer,
+                                               bottom_receive_buffer, top_receive_buffer)
 
-                self.MPI_requests[dtype, order] = (send_left, send_right, send_bottom, send_top,
-                                                   receive_left, receive_right, receive_bottom, receive_top)
+            self.MPI_requests[dtype] = (send_left, send_right, send_bottom, send_top,
+                                        receive_left, receive_right, receive_bottom, receive_top)
         self.pending_requests = None
 
 
-    def MPI_send_at_edges(self, psi, order):
+    def MPI_send_at_edges(self, psi):
         """Start an asynchronous MPI send data from the edges of psi to all
-        adjacent MPI processes. order is the order of derivative operator
-        facilitated by the transfer, order/2 points at each edges are sent."""
-        # if order > 2:
-        #     raise NotImplementedError("Only second order finite differences implemented")
-        left_buffer, right_buffer, bottom_buffer, top_buffer = self.MPI_send_buffers[psi.dtype.type, order]
-        npts = order // 2
-        left_buffer[:] = psi[:npts, :]
-        right_buffer[:] = psi[-npts:, :]
-        bottom_buffer[:] = psi[:, :npts]
-        top_buffer[:] = psi[:, -npts:]
-        self.pending_requests = self.MPI_requests[psi.dtype.type, order]
+        adjacent MPI processes."""
+        left_buffer, right_buffer, bottom_buffer, top_buffer = self.MPI_send_buffers[psi.dtype.type]
+        left_buffer[:] = psi[:self.n_edge_pts, :]
+        right_buffer[:] = psi[-self.n_edge_pts:, :]
+        bottom_buffer[:] = psi[:, :self.n_edge_pts]
+        top_buffer[:] = psi[:, -self.n_edge_pts:]
+        self.pending_requests = self.MPI_requests[psi.dtype.type]
         MPI.Prequest.Startall(self.pending_requests)
 
     def MPI_receive_at_edges(self):
@@ -299,22 +294,22 @@ class Simulator2D(object):
         self.MPI_comm.Allreduce(local_dot, result, MPI.SUM)
         return result[0]
 
-    def par_laplacian_init(self, psi, order=2):
-        self.MPI_send_at_edges(psi, order)
+    def par_laplacian_init(self, psi):
+        self.MPI_send_at_edges(psi)
         # Compute laplacian on internal elements:
-        result = laplacian_interior(psi, self.dx, self.dy, order)
+        result = laplacian_interior(psi, self.dx, self.dy, self.order)
         return result
 
-    def par_laplacian_finalise(self, psi, result, order=2):
+    def par_laplacian_finalise(self, psi, result):
         self.MPI_receive_at_edges()
-        left_buffer, right_buffer, bottom_buffer, top_buffer = self.MPI_receive_buffers[result.dtype.type, order]
+        left_buffer, right_buffer, bottom_buffer, top_buffer = self.MPI_receive_buffers[result.dtype.type]
         result = laplacian_edges(psi, result, left_buffer, right_buffer, bottom_buffer, top_buffer,
-                                 self.dx, self.dy, order)
+                                 self.dx, self.dy, self.order)
         return result
 
-    def par_laplacian(self, psi, order=2):
-        result = self.par_laplacian_init(psi, order)
-        return self.par_laplacian_finalise(result, order)
+    def par_laplacian(self, psi):
+        result = self.par_laplacian_init(psi)
+        return self.par_laplacian_finalise(psi, result)
 
     def fft_laplacian(self, psi):
         if self.MPI_size > 1 or not (self.periodic_x and self.periodic_y):
@@ -504,13 +499,13 @@ def rk4ilip(dt, t_final, dpsi_dt, psi, omega_imag_provided=False,
     _pre_step_checks(i, t, psi, output_interval, output_callback, post_step_callback, final_call=True)
 
 
-def successive_overrelaxation(simulator, system, psi, relaxation_parameter=1.7, convergence=1e-13, operator_order=2,
+def successive_overrelaxation(simulator, system, psi, relaxation_parameter=1.7, convergence=1e-13,
                                output_interval=100, output_callback=None, post_step_callback=None,
                                convergence_check_interval=10):
     i = 0
     while True:
         _pre_step_checks(i, 0, psi, output_interval, output_callback, post_step_callback)
-        simulator.MPI_send_at_edges(psi, operator_order)
+        simulator.MPI_send_at_edges(psi)
         A_diag, A_nondiag, b = system(psi)
         if not i % convergence_check_interval:
             # Only compute the error every convergence_check_interval steps to save time
@@ -519,13 +514,13 @@ def successive_overrelaxation(simulator, system, psi, relaxation_parameter=1.7, 
         else:
             compute_error = False
         squared_error = SOR_step_interior(psi, A_diag, A_nondiag, b, simulator.dx, simulator.dy,
-                                          relaxation_parameter, operator_order, compute_error=compute_error)
+                                          relaxation_parameter, simulator.order, compute_error=compute_error)
         simulator.MPI_receive_at_edges()
-        left_buffer, right_buffer, bottom_buffer, top_buffer = simulator.MPI_receive_buffers[psi.dtype.type, operator_order]
+        left_buffer, right_buffer, bottom_buffer, top_buffer = simulator.MPI_receive_buffers[psi.dtype.type]
 
         squared_error = SOR_step_edges(psi, A_diag, A_nondiag, b, simulator.dx, simulator.dy, relaxation_parameter,
                                        left_buffer, right_buffer, bottom_buffer, top_buffer,
-                                       operator_order, squared_error, compute_error=compute_error)
+                                       simulator.order, squared_error, compute_error=compute_error)
         if compute_error:
             squared_error = np.asarray(squared_error).reshape(1)
             total_squared_error = np.zeros(1)

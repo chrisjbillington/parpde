@@ -51,7 +51,7 @@ class BEC2D(object):
         ncalc = self.compute_number(psi)
         psi[:] *= np.sqrt(N_2D/ncalc)
 
-    def find_groundstate(self, system, H, mu, psi, relaxation_parameter=1.7, convergence=1e-13, operator_order=2,
+    def find_groundstate(self, system, H, mu, psi, relaxation_parameter=1.7, convergence=1e-13,
                          output_interval=100, output_directory=None, convergence_check_interval=10):
         """Find the groundstate of a condensate with sucessive overrelaxation.
         A function for the system of equations being solved is required, as is
@@ -102,7 +102,7 @@ class BEC2D(object):
 
         # Start the relaxation:
         start_time = time.time()
-        successive_overrelaxation(self.simulator, system, psi, relaxation_parameter, convergence, operator_order,
+        successive_overrelaxation(self.simulator, system, psi, relaxation_parameter, convergence,
                                   output_interval, output_callback, post_step_callback=None,
                                   convergence_check_interval=convergence_check_interval)
         if not self.simulator.MPI_rank: # Only rank 0 should print
