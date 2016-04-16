@@ -140,18 +140,17 @@ class Simulator2D(object):
 
         self.shape = (self.nx, self.ny)
 
-        self.dx = (self.x_max_global - self.x_min_global)/(self.nx_global + 1)
-        self.dy = (self.y_max_global - self.y_min_global)/(self.nx_global + 1)
+        self.dx = (self.x_max_global - self.x_min_global)/(self.nx_global - 1)
+        self.dy = (self.y_max_global - self.y_min_global)/(self.ny_global - 1)
 
         self.x_min = self.x_min_global + self.dx * self.global_first_x_index
         self.y_min = self.y_min_global + self.dy * self.global_first_y_index
 
-        self.x_max = self.x_min + self.dx * self.nx
-        self.y_max = self.y_min + self.dy * self.ny
+        self.x_max = self.x_min + self.dx * (self.nx - 1)
+        self.y_max = self.y_min + self.dy * (self.ny - 1)
 
         self.x = np.linspace(self.x_min, self.x_max, self.nx).reshape((self.nx, 1))
         self.y = np.linspace(self.y_min, self.y_max, self.ny).reshape((1, self.ny))
-
 
         self.kx = self.ky = self.f_gradx = self.grady = self.f_laplacian = None
         if self.MPI_size_x == 1:
