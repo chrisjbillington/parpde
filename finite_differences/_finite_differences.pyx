@@ -266,7 +266,7 @@ cdef inline psi_t grad2y_single_point(
             diagonal[0] = D2_6TH_ORDER_0 * over_dy2
         else:
             Ly = D2_6TH_ORDER_0 * psi[i, j]
-        if 2 < j < ny - 2:
+        if 2 < j < ny - 3:
             Ly += D2_6TH_ORDER_1 * (psi[i, j-1] +  psi[i, j+1])
             Ly += D2_6TH_ORDER_2 * (psi[i, j-2] + psi[i, j+2])
             Ly += D2_6TH_ORDER_3 * (psi[i, j-3] + psi[i, j+3])
