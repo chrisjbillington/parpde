@@ -141,6 +141,77 @@ cdef inline void iter_all(int * i, int * j, int nx, int ny, int npts) nogil:
 @cython.wraparound(False)
 @cython.nonecheck(False)
 @cython.cdivision(True)
+cdef inline psi_t gradx_single_point(
+    int i, int j, int nx, psi_t [:, :] psi, double over_dx, int order,
+    int hollow, psi_t * diagonal, psi_t [:, :] left_buffer, psi_t [:, :] right_buffer) nogil:
+    """Compute the first x derivative at a single point i, j. If "hollow" is
+    true, the central point is excluded from the calculation, and 'diagonal'
+    set to the operator's value there."""
+    cdef psi_t Lx
+    Lx = 0
+    if hollow:
+        diagonal[0] = 0
+    if order == 2:
+        if 0 < i < nx - 1:
+            Lx += D_2ND_ORDER_1 * (psi[i+1, j] - psi[i-1, j])
+        elif i == 0:
+            Lx += D_2ND_ORDER_1 * (psi[i+1, j] - left_buffer[0, j])
+        elif i == nx - 1:
+            Lx += D_2ND_ORDER_1 * (right_buffer[0, j] - psi[i-1, j])
+    elif order == 4:
+        if 1 < i < nx - 2:
+            Lx += D_4TH_ORDER_1 * (psi[i+1, j] - psi[i-1, j])
+            Lx += D_4TH_ORDER_2 * (psi[i+2, j] - psi[i-2, j])
+        elif i == 0:
+            Lx += D_4TH_ORDER_1 * (psi[i+1, j] - left_buffer[1, j])
+            Lx += D_4TH_ORDER_2 * (psi[i+2, j] - left_buffer[0, j])
+        elif i == 1:
+            Lx += D_4TH_ORDER_1 * (psi[i+1, j] - psi[i-1, j])
+            Lx += D_4TH_ORDER_2 * (psi[i+2, j] - left_buffer[1, j])
+        elif i == nx - 2:
+            Lx += D_4TH_ORDER_1 * (psi[i+1, j] - psi[i-1, j])
+            Lx += D_4TH_ORDER_2 * (right_buffer[0, j] - psi[i-2, j])
+        elif i == nx - 1:
+            Lx += D_4TH_ORDER_1 * (right_buffer[0, j] - psi[i-1, j])
+            Lx += D_4TH_ORDER_2 * (right_buffer[1, j] - psi[i-2, j])
+    elif order == 6:
+        if 2 < i < nx - 3:
+            Lx += D_6TH_ORDER_1 * (psi[i+1, j] - psi[i-1, j])
+            Lx += D_6TH_ORDER_2 * (psi[i+2, j] - psi[i-2, j])
+            Lx += D_6TH_ORDER_3 * (psi[i+3, j] - psi[i-3, j])
+        elif i == 0:
+            Lx += D_6TH_ORDER_1 * (psi[i+1, j] - left_buffer[2, j])
+            Lx += D_6TH_ORDER_2 * (psi[i+2, j] - left_buffer[1, j])
+            Lx += D_6TH_ORDER_3 * (psi[i+3, j] - left_buffer[0, j])
+        elif i == 1:
+            Lx += D_6TH_ORDER_1 * (psi[i+1, j] - psi[i-1, j])
+            Lx += D_6TH_ORDER_2 * (psi[i+2, j] - left_buffer[2, j])
+            Lx += D_6TH_ORDER_3 * (psi[i+3, j] - left_buffer[1, j])
+        elif i == 2:
+            Lx += D_6TH_ORDER_1 * (psi[i+1, j] - psi[i-1, j])
+            Lx += D_6TH_ORDER_2 * (psi[i+2, j] - psi[i-2, j])
+            Lx += D_6TH_ORDER_3 * (psi[i+3, j] - left_buffer[2, j])
+        elif i == nx - 3:
+            Lx += D_6TH_ORDER_1 * (psi[i+1, j] - psi[i-1, j])
+            Lx += D_6TH_ORDER_2 * (psi[i+2, j] - psi[i-2, j])
+            Lx += D_6TH_ORDER_3 * (right_buffer[0, j] - psi[i-3, j])
+        elif i == nx - 2:
+            Lx += D_6TH_ORDER_1 * (psi[i+1, j] - psi[i-1, j])
+            Lx += D_6TH_ORDER_2 * (right_buffer[0, j] - psi[i-2, j])
+            Lx += D_6TH_ORDER_3 * (right_buffer[1, j] - psi[i-3, j])
+        elif i == nx - 1:
+            Lx += D_6TH_ORDER_1 * (right_buffer[0, j] - psi[i-1, j])
+            Lx += D_6TH_ORDER_2 * (right_buffer[1, j] - psi[i-2, j])
+            Lx += D_6TH_ORDER_3 * (right_buffer[2, j] - psi[i-3, j])
+
+    return Lx * over_dx
+
+
+@cython.initializedcheck(False)
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+@cython.cdivision(True)
 cdef inline psi_t grad2x_single_point(
     int i, int j, int nx, psi_t [:, :] psi, double over_dx2, int order,
     int hollow, psi_t * diagonal, psi_t [:, :] left_buffer, psi_t [:, :] right_buffer) nogil:
@@ -222,6 +293,77 @@ cdef inline psi_t grad2x_single_point(
 @cython.wraparound(False)
 @cython.nonecheck(False)
 @cython.cdivision(True)
+cdef inline psi_t grady_single_point(
+    int i, int j, int ny, psi_t [:, :] psi, double over_dy, int order,
+    int hollow, psi_t * diagonal, psi_t [:, :] bottom_buffer, psi_t [:, :] top_buffer) nogil:
+    """Compute the second y derivative at a single point i, j. If "hollow" is
+    true, the central point is excluded from the calculation, and 'diagonal'
+    set to the operator's value there."""
+    cdef psi_t Ly
+    Ly = 0
+    if hollow:
+        diagonal[0] = 0
+    if order == 2:
+        if 0 < j < ny - 1:
+            Ly += D_2ND_ORDER_1 * (psi[i, j+1] - psi[i, j-1])
+        elif j == 0:
+            Ly += D_2ND_ORDER_1 * (psi[i, j+1] - bottom_buffer[i, 0])
+        elif j == ny - 1:
+            Ly += D_2ND_ORDER_1 * (top_buffer[i, 0] - psi[i, j-1])
+    elif order == 4:
+        if 1 < j < ny - 2:
+            Ly += D_4TH_ORDER_1 * (psi[i, j+1] - psi[i, j-1])
+            Ly += D_4TH_ORDER_2 * (psi[i, j+2] - psi[i, j-2])
+        elif j == 0:
+            Ly += D_4TH_ORDER_1 * (psi[i, j+1] - bottom_buffer[i, 1])
+            Ly += D_4TH_ORDER_2 * (psi[i, j+2] - bottom_buffer[i, 0])
+        elif j == 1:
+            Ly += D_4TH_ORDER_1 * (psi[i, j+1] - psi[i, j-1])
+            Ly += D_4TH_ORDER_2 * (psi[i, j+2] - bottom_buffer[i, 1])
+        elif j == ny - 2:
+            Ly += D_4TH_ORDER_1 * (psi[i, j+1] - psi[i, j-1])
+            Ly += D_4TH_ORDER_2 * (top_buffer[i, 0] - psi[i, j-2])
+        elif j == ny - 1:
+            Ly += D_4TH_ORDER_1 * (top_buffer[i, 0] - psi[i, j-1])
+            Ly += D_4TH_ORDER_2 * (top_buffer[i, 1] - psi[i, j-2])
+    elif order == 6:
+        if 2 < j < ny - 3:
+            Ly += D_6TH_ORDER_1 * (psi[i, j+1] - psi[i, j-1])
+            Ly += D_6TH_ORDER_2 * (psi[i, j+2] - psi[i, j-2])
+            Ly += D_6TH_ORDER_3 * (psi[i, j+3] - psi[i, j-3])
+        if j == 0:
+            Ly += D_6TH_ORDER_1 * (psi[i, j+1] - bottom_buffer[i, 2])
+            Ly += D_6TH_ORDER_2 * (psi[i, j+2] - bottom_buffer[i, 1])
+            Ly += D_6TH_ORDER_3 * (psi[i, j+3] - bottom_buffer[i, 0])
+        elif j == 1:
+            Ly += D_6TH_ORDER_1 * (psi[i, j+1] - psi[i, j-1])
+            Ly += D_6TH_ORDER_2 * (psi[i, j+2] - bottom_buffer[i, 2])
+            Ly += D_6TH_ORDER_3 * (psi[i, j+3] - bottom_buffer[i, 1])
+        elif j == 2:
+            Ly += D_6TH_ORDER_1 * (psi[i, j+1] - psi[i, j-1])
+            Ly += D_6TH_ORDER_2 * (psi[i, j+2] - psi[i, j-2])
+            Ly += D_6TH_ORDER_3 * (psi[i, j+3] - bottom_buffer[i, 2])
+        elif j == ny - 3:
+            Ly += D_6TH_ORDER_1 * (psi[i, j+1] - psi[i, j-1])
+            Ly += D_6TH_ORDER_2 * (psi[i, j+2] - psi[i, j-2])
+            Ly += D_6TH_ORDER_3 * (top_buffer[i, 0] - psi[i, j-3])
+        elif j == ny - 2:
+            Ly += D_6TH_ORDER_1 * (psi[i, j+1] - psi[i, j-1])
+            Ly += D_6TH_ORDER_2 * (top_buffer[i, 0] - psi[i, j-2])
+            Ly += D_6TH_ORDER_3 * (top_buffer[i, 1] - psi[i, j-3])
+        elif j == ny - 1:
+            Ly += D_6TH_ORDER_1 * (top_buffer[i, 0] - psi[i, j-1])
+            Ly += D_6TH_ORDER_2 * (top_buffer[i, 1] - psi[i, j-2])
+            Ly += D_6TH_ORDER_3 * (top_buffer[i, 2] - psi[i, j-3])
+
+    return Ly * over_dy
+
+
+@cython.initializedcheck(False)
+@cython.boundscheck(False)
+@cython.wraparound(False)
+@cython.nonecheck(False)
+@cython.cdivision(True)
 cdef inline psi_t grad2y_single_point(
     int i, int j, int ny, psi_t [:, :] psi, double over_dy2, int order,
     int hollow, psi_t * diagonal, psi_t [:, :] bottom_buffer, psi_t [:, :] top_buffer) nogil:
@@ -236,7 +378,7 @@ cdef inline psi_t grad2y_single_point(
         else:
             Ly = D2_2ND_ORDER_0 * psi[i, j]
         if 0 < j < ny - 1:
-            Ly += D2_2ND_ORDER_1 * ( psi[i, j-1] + psi[i, j+1])
+            Ly += D2_2ND_ORDER_1 * (psi[i, j-1] + psi[i, j+1])
         elif j == 0:
             Ly += D2_2ND_ORDER_1 * (bottom_buffer[i, 0] + psi[i, j+1])
         elif j == ny - 1:
@@ -321,6 +463,35 @@ cdef inline psi_t operators_single_point(
     cdef int j_prime
     if hollow:
         diagonal[0] = 0
+
+    if gradx_coeff is not None:
+        if gradx_coeff.shape[0] > 1:
+            i_prime = i
+        else:
+            i_prime = 0
+        if gradx_coeff.shape[1] > 1:
+            j_prime = j
+        else:
+            j_prime = 0
+        L_psi += gradx_coeff[i_prime, j_prime] * gradx_single_point(i, j, nx, psi, over_dx, order, hollow,
+                                                                    &diagonal_temp, left_buffer, right_buffer)
+        if hollow:
+            diagonal[0] += gradx_coeff[i_prime, j_prime] * diagonal_temp
+
+    if grady_coeff is not None:
+        if grady_coeff.shape[0] > 1:
+            i_prime = i
+        else:
+            i_prime = 0
+        if grady_coeff.shape[1] > 1:
+            j_prime = j
+        else:
+            j_prime = 0
+        L_psi += grady_coeff[i_prime, j_prime] * grady_single_point(i, j, ny, psi, over_dy, order, hollow,
+                                                                    &diagonal_temp, bottom_buffer, top_buffer)
+        if hollow:
+            diagonal[0] += grady_coeff[i_prime, j_prime] * diagonal_temp
+
     if grad2x_coeff is not None:
         if grad2x_coeff.shape[0] > 1:
             i_prime = i
@@ -348,6 +519,7 @@ cdef inline psi_t operators_single_point(
                                                                       &diagonal_temp, bottom_buffer, top_buffer)
         if hollow:
             diagonal[0] += grad2y_coeff[i_prime, j_prime] * diagonal_temp
+
     return L_psi
 
 @cython.initializedcheck(False)
