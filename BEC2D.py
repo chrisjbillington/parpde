@@ -207,7 +207,7 @@ class BEC2D(object):
             rk4(dt, t_final, dpsi_dt, psi,
                 output_interval=output_interval, output_callback=output_callback, post_step_callback=post_step_callback)
         elif method == 'rk4ilip':
-            rk4ilip(dt, t_final, dpsi_dt, psi, omega_imag_provided,
-                    output_interval=output_interval, output_callback=output_callback, post_step_callback=post_step_callback)
+            rk4ilip(dt, t_final, dpsi_dt, psi, omega_imag_provided, output_interval=output_interval,
+                    output_callback=output_callback, post_step_callback=post_step_callback)
 
         return psi

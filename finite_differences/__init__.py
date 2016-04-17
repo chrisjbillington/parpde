@@ -25,4 +25,5 @@ if not os.path.exists(extension_so) or os.path.getmtime(extension_so) < os.path.
 
 MPI.COMM_WORLD.Barrier()
 
-from _finite_differences import laplacian_edges, laplacian_interior, SOR_step_interior, SOR_step_edges
+# from _finite_differences import laplacian_edges, laplacian_interior, SOR_step_interior, SOR_step_edges
+from _finite_differences import SOR_step, apply_operator

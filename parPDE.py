@@ -4,7 +4,7 @@ import enum
 import numpy as np
 from mpi4py import MPI
 import h5py
-from finite_differences import laplacian_interior, laplacian_edges, SOR_step_interior, SOR_step_edges
+from finite_differences import SOR_step, apply_operator
 from scipy.fftpack import fft2, ifft2
 
 
@@ -44,14 +44,12 @@ def format_float(x, sigfigs=4, units=''):
     return result + units
 
 
-# Constants to represent differential operators. Must match the corresponding
-# enum in finite_differences/_finite_differences.pyx
+# Constants to represent differential operators.
 class Operators(enum.IntEnum):
     GRADX = 0
     GRADY = 1
     GRAD2X = 2
     GRAD2Y = 3
-    LAPLACIAN = 4
 
 
 class OperatorSum(dict):
@@ -87,9 +85,13 @@ class OperatorSum(dict):
     __rmul__ = __mul__
     __rdiv__ = __div__
 
-
-
-LAPLACIAN = OperatorSum({Operators.LAPLACIAN: np.ones((1, 1))})
+# Objects representing operators, which can be added, subtracted etc from each
+# other and multiplied by constants:
+GRADX = OperatorSum({Operators.GRADX: np.ones((1, 1))})
+GRADY = OperatorSum({Operators.GRADY: np.ones((1, 1))})
+GRAD2X = OperatorSum({Operators.GRAD2X: np.ones((1, 1))})
+GRAD2Y = OperatorSum({Operators.GRAD2Y: np.ones((1, 1))})
+LAPLACIAN = GRAD2X + GRAD2Y
 
 
 def get_factors(n):
@@ -129,9 +131,9 @@ class Simulator2D(object):
         self.ny_global = ny_global
         self.periodic_x = periodic_x
         self.periodic_y = periodic_y
-        self.order = operator_order
-        self.n_edge_pts = self.order // 2
-        if not self.order in [2, 4, 6]:
+        self.operator_order = operator_order
+        self.n_edge_pts = self.operator_order // 2
+        if not self.operator_order in [2, 4, 6]:
             msg = "Only differential operators of order 2, 4, 6 supported."
             raise ValueError(msg)
         self.global_shape = (self.nx_global, self.ny_global)
@@ -296,14 +298,19 @@ class Simulator2D(object):
     def par_laplacian_init(self, psi):
         self.MPI_send_at_edges(psi)
         # Compute laplacian on internal elements:
-        result = laplacian_interior(psi, self.dx, self.dy, self.order)
+        result = apply_operator(psi, None, None, LAPLACIAN[Operators.GRAD2X], LAPLACIAN[Operators.GRAD2X],
+                                self.dx,  self.dy, self.operator_order, out=None,
+                                left_buffer=None, right_buffer=None,
+                                bottom_buffer=None, top_buffer=None, interior=1, edges=0)
         return result
 
     def par_laplacian_finalise(self, psi, result):
         self.MPI_receive_at_edges()
         left_buffer, right_buffer, bottom_buffer, top_buffer = self.MPI_receive_buffers[result.dtype.type]
-        result = laplacian_edges(psi, result, left_buffer, right_buffer, bottom_buffer, top_buffer,
-                                 self.dx, self.dy, self.order)
+        result = apply_operator(psi, None, None, LAPLACIAN[Operators.GRAD2X], LAPLACIAN[Operators.GRAD2Y],
+                                        self.dx,  self.dy, self.operator_order, out=result,
+                                        left_buffer=left_buffer, right_buffer=right_buffer,
+                                        bottom_buffer=bottom_buffer, top_buffer=top_buffer, interior=0, edges=1)
         return result
 
     def par_laplacian(self, psi):
@@ -512,14 +519,23 @@ def successive_overrelaxation(simulator, system, psi, relaxation_parameter=1.7, 
             integral_b = simulator.par_vdot(b, b).real
         else:
             compute_error = False
-        squared_error = SOR_step_interior(psi, A_diag, A_nondiag, b, simulator.dx, simulator.dy,
-                                          relaxation_parameter, simulator.order, compute_error=compute_error)
+
+        gradx_coeff = A_nondiag.get(Operators.GRADX, None)
+        grady_coeff = A_nondiag.get(Operators.GRADY, None)
+        grad2x_coeff = A_nondiag.get(Operators.GRAD2X, None)
+        grad2y_coeff = A_nondiag.get(Operators.GRAD2Y, None)
+
+        squared_error = SOR_step(psi, A_diag, gradx_coeff, grady_coeff, grad2x_coeff, grad2y_coeff, b,
+                                 simulator.dx, simulator.dy, relaxation_parameter, simulator.operator_order,
+                                 interior=True, edges=False)
+
         simulator.MPI_receive_at_edges()
         left_buffer, right_buffer, bottom_buffer, top_buffer = simulator.MPI_receive_buffers[psi.dtype.type]
 
-        squared_error = SOR_step_edges(psi, A_diag, A_nondiag, b, simulator.dx, simulator.dy, relaxation_parameter,
-                                       left_buffer, right_buffer, bottom_buffer, top_buffer,
-                                       simulator.order, squared_error, compute_error=compute_error)
+        squared_error = SOR_step(psi, A_diag, gradx_coeff, grady_coeff, grad2x_coeff, grad2y_coeff, b,
+                                 simulator.dx, simulator.dy, relaxation_parameter, simulator.operator_order,
+                                 left_buffer, right_buffer, bottom_buffer, top_buffer,
+                                 squared_error=squared_error, interior=False, edges=True)
         if compute_error:
             squared_error = np.asarray(squared_error).reshape(1)
             total_squared_error = np.zeros(1)

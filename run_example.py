@@ -36,7 +36,7 @@ N_2D, omega = get_number_and_trap(rhomax, R)  # 2D normalisation constant and tr
 nx_global = ny_global = 256
 x_max_global = y_max_global = 10e-6
 
-simulator = Simulator2D(-x_max_global, x_max_global, -y_max_global, y_max_global, nx_global, ny_global, operator_order=4)
+simulator = Simulator2D(-x_max_global, x_max_global, -y_max_global, y_max_global, nx_global, ny_global, operator_order=6)
 bec2d = BEC2D(simulator, natural_units=False)
 
 x = simulator.x
@@ -87,7 +87,7 @@ if __name__ == '__main__':
     psi = np.sqrt(psi)
 
     # Find the groundstate:
-    psi = bec2d.find_groundstate(groundstate_system, H, mu, psi, relaxation_parameter=1.7, convergence=1e-13,
+    psi = bec2d.find_groundstate(groundstate_system, H, mu, psi, relaxation_parameter=1.5, convergence=1e-13,
                                  output_interval=100, output_directory='groundstate', convergence_check_interval=10)
 
     # psi is real so far, convert it to complex:
