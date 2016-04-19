@@ -38,7 +38,7 @@ x_max_global = y_max_global = 10e-6
 
 simulator = Simulator2D(-x_max_global, x_max_global, -y_max_global, y_max_global, nx_global, ny_global,
                         periodic_x=True, periodic_y=True, operator_order=6)
-bec2d = BEC2D(simulator, natural_units=False)
+bec2d = BEC2D(simulator, natural_units=False, use_ffts=False)
 
 x = simulator.x
 y = simulator.y

@@ -4,11 +4,12 @@ from parPDE import HDFOutput, format_float
 
 
 class BEC2D(object):
-    def __init__(self, simulator, natural_units=False):
+    def __init__(self, simulator, natural_units=False, use_ffts=False):
         self.simulator = simulator
         self.natural_units = natural_units
         self.dx = simulator.dx
         self.dy = simulator.dy
+        self.use_ffts = use_ffts
 
         if natural_units:
             self.hbar = 1
@@ -23,7 +24,7 @@ class BEC2D(object):
         function that returns the result of that Hamiltonian applied to psi."""
         ncalc = self.compute_number(psi)
         K, H_local_lin, H_local_nonlin = H(t, psi)
-        K_psi = self.simulator.par_operator(K, psi)
+        K_psi = self.simulator.par_operator(K, psi, use_ffts=self.use_ffts)
         H_psi = K_psi + (H_local_lin + H_local_nonlin)*psi
         mucalc = self.simulator.par_vdot(psi, H_psi) * self.dx * self.dy / ncalc
         return mucalc.real
@@ -33,7 +34,7 @@ class BEC2D(object):
         offset, for example) corresponding a given Hamiltonian, where H is a
         function that returns the result of that Hamiltonian applied to psi."""
         K, H_local_lin, H_local_nonlin = H(t, psi)
-        K_psi = self.simulator.par_operator(K, psi)
+        K_psi = self.simulator.par_operator(K, psi, use_ffts=self.use_ffts)
         # Total energy operator. Differs from total Hamiltonian in that the
         # nonlinear term is halved in order to avoid double counting the
         # interaction energy:
@@ -108,7 +109,7 @@ class BEC2D(object):
 
     def evolve(self, dt, t_final, H, psi, mu=0, method='rk4', imaginary_time=False,
                output_interval=100, output_directory=None, post_step_callback=None, flush_output=True,
-               error_check_interval=10):
+               estimate_error=True):
 
         """Evolve a wavefunction in time. Timestep, final time, the
         Hamiltonian H and the initial wavefunction are required. mu is
@@ -140,7 +141,7 @@ class BEC2D(object):
                 def dpsi_dt(t, psi):
                     """The differential equation for psi in imaginary time"""
                     K, H_local_lin, H_local_nonlin = H(t, psi)
-                    K_psi = self.simulator.par_operator(K, psi)
+                    K_psi = self.simulator.par_operator(K, psi, use_ffts=self.use_ffts)
                     return -1 / self.hbar * (K_psi + (H_local_lin + H_local_nonlin - mu) * psi)
 
             else:
@@ -148,7 +149,7 @@ class BEC2D(object):
                 def dpsi_dt(t, psi):
                     """The differential equation for psi"""
                     K, H_local_lin, H_local_nonlin = H(t, psi)
-                    K_psi = self.simulator.par_operator(K, psi)
+                    K_psi = self.simulator.par_operator(K, psi, use_ffts=self.use_ffts)
                     d_psi_dt = -1j / self.hbar * (K_psi + (H_local_lin + H_local_nonlin - mu) * psi)
                     return d_psi_dt
 
@@ -180,7 +181,7 @@ class BEC2D(object):
                     well as the angular frequencies corresponding to the spatial
                     part of the Hamiltonian for use with the RK4ILIP method"""
                     K, H_local_lin, H_local_nonlin = H(t, psi)
-                    K_psi = self.simulator.par_operator(K, psi)
+                    K_psi = self.simulator.par_operator(K, psi, use_ffts=self.use_ffts)
                     omega_imag = -(H_local_lin + H_local_nonlin - mu)/self.hbar
                     d_psi_dt = -1 / self.hbar * K_psi + omega_imag * psi
                     return d_psi_dt, omega_imag
@@ -192,7 +193,7 @@ class BEC2D(object):
                     frequencies corresponding to the spatial part of the
                     Hamiltonian for use with the RK4ILIP method"""
                     K, H_local_lin, H_local_nonlin = H(t, psi)
-                    K_psi = self.simulator.par_operator(K, psi)
+                    K_psi = self.simulator.par_operator(K, psi, use_ffts=self.use_ffts)
                     omega = (H_local_lin + H_local_nonlin - mu)/self.hbar
                     d_psi_dt = -1j / self.hbar * K_psi -1j*omega * psi
                     return d_psi_dt, omega
@@ -232,19 +233,19 @@ class BEC2D(object):
         # Start the integration:
         if method == 'rk4':
             self.simulator.rk4(dt, t_final, dpsi_dt, psi, output_interval=output_interval,output_callback=output_callback,
-                               post_step_callback=post_step_callback, error_check_interval=error_check_interval)
+                               post_step_callback=post_step_callback, estimate_error=estimate_error)
         elif method == 'rk4ip':
             self.simulator.rk4ip(dt, t_final, nonlocal_operator, local_operator, psi,
                                  output_interval=output_interval, output_callback=output_callback,
-                                 post_step_callback=post_step_callback, error_check_interval=error_check_interval)
+                                 post_step_callback=post_step_callback, estimate_error=estimate_error)
         elif method == 'rk4ilip':
             self.simulator.rk4ilip(dt, t_final, dpsi_dt, psi, omega_imag_provided, output_interval=output_interval,
                                    output_callback=output_callback, post_step_callback=post_step_callback,
-                                   error_check_interval=error_check_interval)
+                                   estimate_error=estimate_error)
         elif method == 'split step':
             self.simulator.split_step(dt, t_final, nonlocal_operator, local_operator, psi,
                                       output_interval=output_interval, output_callback=output_callback,
                                       post_step_callback=post_step_callback,
-                                      error_check_interval=error_check_interval)
+                                      estimate_error=estimate_error)
 
         return psi

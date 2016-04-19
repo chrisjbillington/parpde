@@ -119,24 +119,6 @@ def get_best_2D_segmentation(size_x, size_y, N_segments):
     return best_n_segments_x, best_n_segments_y
 
 
-def _pre_step_checks(i, t, psi, output_interval, output_callback, post_step_callback, infodict, final_call=False):
-    if np.isnan(psi).any() or np.isinf(psi).any():
-        raise RuntimeError('It exploded :(')
-    if post_step_callback is not None:
-        post_step_callback(i, t, psi, infodict)
-    output_callback_called = False
-    if output_callback is not None:
-        if np.iterable(output_interval):
-            if i in output_interval:
-                output_callback(i, t, psi, infodict)
-                output_callback_called = True
-        elif not i % output_interval:
-            output_callback(i, t, psi, infodict)
-            output_callback_called = True
-    if final_call and not output_callback_called:
-        output_callback(i, t, psi, infodict)
-
-
 class Simulator2D(object):
     def __init__(self, x_min_global, x_max_global, y_min_global, y_max_global, nx_global, ny_global,
                  periodic_x=False, periodic_y=False, operator_order=4):
@@ -339,9 +321,13 @@ class Simulator2D(object):
                               left_buffer=left_buffer, right_buffer=right_buffer,
                               bottom_buffer=bottom_buffer, top_buffer=top_buffer, interior=False, edges=True)
 
-    def par_operator(self, psi, operator, out=None):
-        out = self.par_operator_init(psi, operator, out)
-        return self.par_operator_finalise(psi, operator, out)
+    def par_operator(self, operator, psi, out=None, use_ffts=False):
+        if use_ffts:
+            if out is not None:
+                raise ValueError("out parameter not supported for fft operators")
+            return self.apply_fourier_operator(operator, psi)
+        out = self.par_operator_init(operator, psi, out)
+        return self.par_operator_finalise(operator, psi, out)
 
     def make_fourier_operator(self, operator):
         """If the operator is diagonal in the Fourier basis, return its
@@ -386,6 +372,23 @@ class Simulator2D(object):
             result = result.real
         return result
 
+    def _pre_step_checks(self, i, t, psi, output_interval, output_callback, post_step_callback, infodict, final_call=False):
+        if np.isnan(psi).any() or np.isinf(psi).any():
+            raise RuntimeError('It exploded :(')
+        if post_step_callback is not None:
+            post_step_callback(i, t, psi, infodict)
+        output_callback_called = False
+        if output_callback is not None and output_interval is not None:
+            if np.iterable(output_interval):
+                if i in output_interval:
+                    output_callback(i, t, psi, infodict)
+                    output_callback_called = True
+            elif not i % output_interval:
+                output_callback(i, t, psi, infodict)
+                output_callback_called = True
+            if final_call and not output_callback_called:
+                output_callback(i, t, psi, infodict)
+
     def successive_overrelaxation(self, system, psi, relaxation_parameter=1.7, convergence=1e-13,
                                    output_interval=100, output_callback=None, post_step_callback=None,
                                    convergence_check_interval=10):
@@ -395,7 +398,7 @@ class Simulator2D(object):
         while True:
             time_per_step = (time.time() - start_time)/i if i else np.nan
             infodict = {"convergence": convergence_calc, 'time per step': time_per_step}
-            _pre_step_checks(i, 0, psi, output_interval, output_callback, post_step_callback, infodict)
+            self._pre_step_checks(i, 0, psi, output_interval, output_callback, post_step_callback, infodict)
             self.MPI_send_at_edges(psi)
             A_diag, A_nondiag, b = system(psi)
             if not i % convergence_check_interval:
@@ -431,65 +434,80 @@ class Simulator2D(object):
             i += 1
         time_per_step = (time.time() - start_time)/i if i else np.nan
         infodict = {"convergence": convergence_calc, 'time per step': time_per_step}
-        _pre_step_checks(i, 0, psi, output_interval, output_callback, post_step_callback, infodict, final_call=True)
+        self._pre_step_checks(i, 0, psi, output_interval, output_callback, post_step_callback, infodict, final_call=True)
 
     def _evolve(self, dt, t_final, psi, integration_step_func,
-                output_interval, output_callback, post_step_callback, error_check_interval):
+                output_interval, output_callback, post_step_callback, estimate_error, method_order):
         """common loop for time integration"""
         t = 0
         i = 0
         step_error = 0
-        error_check_forward_step=False
-        error_check_backward_step=False
+        error_check_substep = None
         start_time = time.time()
-        while not t > t_final:
 
-            # Every error_check_interval, approximate the error by taking a
-            # backward timestep and comparing with the previous solution:
-            if error_check_interval is not None:
-                if not i % error_check_interval and not (error_check_forward_step or error_check_backward_step):
-                    # Save the wavefunction before doing a normal step
-                    error_check_forward_step = True
+        # The number of substeps we take depends on the order of the method.
+        # We do whatever we epxect to reduce the error by a factor of 16:
+        n_errcheck_substeps = int(np.ceil(16**(1.0/method_order)))
+        while t < t_final or error_check_substep is not None:
+            # The step before output is to occur, take n_errcheck_substeps
+            # steps of size dt/n_errcheck_substeps, then step over the same
+            # interval with a size of dt, and compare the solutions for an
+            # estimate of the per-step error.
+            if estimate_error and output_interval is not None:
+                if error_check_substep is None:
+                    # Do we need to do an error checking step?
+                    if np.iterable(output_interval):
+                        if (i + 1) in output_interval:
+                            error_check_substep = 0
+                    elif not (i +1) % output_interval:
+                        error_check_substep = 0
+
+                if error_check_substep == 0:
+                    # Save the wavefunction and actual timestep before setting
+                    # dt to one fifth its value:
                     psi_pre_errorcheck = psi.copy()
-                elif error_check_forward_step:
-                    error_check_forward_step = False
-                    error_check_backward_step = True
-                    # Continue from here after our backwards step:
-                    psi_post_errorcheck= psi.copy()
-                    # Do a backwards step:
-                    dt = -dt
-                elif error_check_backward_step:
-                    error_check_forward_step = False
-                    error_check_backward_step = False
-                    local_sum_squared_error = (np.abs(psi - psi_pre_errorcheck)**2).sum()
+                    dt_unmodified = dt
+                    dt = dt/n_errcheck_substeps
+                if error_check_substep == n_errcheck_substeps:
+                    # Ok, we've done our five small steps. Save the resulting wavefunction:
+                    psi_accurate = psi.copy()
+                    # Restore the wavefunction and dt:
+                    psi[:] = psi_pre_errorcheck
+                    dt = dt_unmodified
+                if error_check_substep == n_errcheck_substeps + 1:
+                    # Ok, we've completed the normal sized step. Compare wavefunctions:
+                    local_sum_squared_error = (np.abs(psi - psi_accurate)**2).sum()
                     local_sum_squared_error = np.asarray(local_sum_squared_error).reshape(1)
                     total_sum_squared_error = np.zeros(1)
                     self.MPI_comm.Allreduce(local_sum_squared_error, total_sum_squared_error, MPI.SUM)
-                    psi_norm = self.par_vdot(psi_pre_errorcheck, psi_pre_errorcheck).real
-                    step_error = np.sqrt(0.5*total_sum_squared_error/psi_norm)
-                    # Restore psi, i t, and dt:
-                    psi[:] = psi_post_errorcheck
-                    i -= 1
-                    dt = -dt
-                    t += dt
-
+                    psi_norm = self.par_vdot(psi_accurate, psi_accurate).real
+                    step_error = np.sqrt(total_sum_squared_error/psi_norm)
+                    # Finished checking error.
+                    error_check_substep = None
+                    # The missed increment of i from the normal sized
+                    # timestep. This i should trigger output at the next call
+                    # to _pre_step_checks:
+                    i += 1
             time_per_step = (time.time() - start_time)/i if i else np.nan
             infodict = {'time per step': time_per_step, 'step error': step_error}
-            if not error_check_backward_step: # Don't do output on a backward step:
-                _pre_step_checks(i, t, psi, output_interval, output_callback, post_step_callback, infodict)
+            if error_check_substep is None:
+                self._pre_step_checks(i, t, psi, output_interval, output_callback, post_step_callback, infodict)
 
             # The actual integration step:
             integration_step_func(t, dt, psi)
             t += dt
-            i += 1
+            if error_check_substep is not None:
+                error_check_substep += 1
+            else:
+                i += 1
 
         # Ensure we output at the end:
         time_per_step = (time.time() - start_time)/i if i else np.nan
         infodict = {'time per step': time_per_step, 'step error': step_error}
-        _pre_step_checks(i, t, psi, output_interval, output_callback, post_step_callback, infodict, final_call=True)
+        self._pre_step_checks(i, t, psi, output_interval, output_callback, post_step_callback, infodict, final_call=True)
 
     def rk4(self, dt, t_final, dpsi_dt, psi,
-            output_interval=100, output_callback=None, post_step_callback=None, error_check_interval=None):
+            output_interval=100, output_callback=None, post_step_callback=None, estimate_error=False):
         """Fourth order Runge-Kutta. dpsi_dt should return an array for the time derivatives of psi."""
 
         def rk4_step(t, dt, psi):
@@ -500,11 +518,10 @@ class Simulator2D(object):
             psi[:] += dt/6*(k1 + 2*k2 + 2*k3 + k4)
 
         self._evolve(dt, t_final, psi, rk4_step,
-                     output_interval, output_callback, post_step_callback, error_check_interval)
-
+                     output_interval, output_callback, post_step_callback, estimate_error, method_order=4)
 
     def rk4ilip(self, dt, t_final, dpsi_dt, psi, omega_imag_provided=False,
-                output_interval=100, output_callback=None, post_step_callback=None, error_check_interval=None):
+                output_interval=100, output_callback=None, post_step_callback=None, estimate_error=False):
         """Fourth order Runge-Kutta in an instantaneous local interaction picture.
         dpsi_dt should return both the derivative of psi, and an array omega,
         which is H_local/hbar at each point in space (Note that H_local should not
@@ -558,10 +575,10 @@ class Simulator2D(object):
             psi[:] = U_dagger_full*phi_4
 
         self._evolve(dt, t_final, psi, rk4ilip_step,
-                     output_interval, output_callback, post_step_callback, error_check_interval)
+                     output_interval, output_callback, post_step_callback, estimate_error, method_order=4)
 
     def split_step(self, dt, t_final, nonlocal_operator, local_operator, psi,
-            output_interval=100, output_callback=None, post_step_callback=None, error_check_interval=None):
+            output_interval=100, output_callback=None, post_step_callback=None, estimate_error=False):
         """Split step method. Nonlocal_operator is an operator diagonal in
         Fourier space. It can be either an OperatorSum instance if it is just
         a sum of differential operators, or can be given as an array
@@ -575,7 +592,7 @@ class Simulator2D(object):
             msg = "nonlocal_operator must be OperatorSum instance or array"
             raise TypeError(msg)
 
-        # We cache these for different timesteps:
+        # We cache these for different timestep sizes:
         fourier_unitaries = {}
 
         def U(dt, psi):
@@ -586,18 +603,30 @@ class Simulator2D(object):
                 fourier_unitaries[dt] = unitary
             return self.apply_fourier_operator(unitary, psi)
 
+        # The same operator is used at the end of one step as at the beginning
+        # of the next (if they have the same dt), so we cache it:
+        cached_local_unitary = {0: (None, None, None)}
+
         def split_step_step(t, dt, psi):
-            # Real space step:
-            local_unitary = np.exp(dt*local_operator(t, psi))
+            previous_t, previous_dt, previous_local_unitary = cached_local_unitary[0]
+            if previous_t == t and previous_dt == dt:
+                local_unitary = previous_local_unitary
+            else:
+                local_unitary = np.exp(0.5*dt*local_operator(t, psi))
+            # Real space half step:
             psi[:] *= local_unitary
             # Fourier space step:
             psi[:] =  U(dt, psi)
+            # Real space half step:
+            local_unitary = np.exp(0.5*dt*local_operator(t+dt, psi))
+            cached_local_unitary[0] = (t+dt, dt, local_unitary)
+            psi[:] *= local_unitary
 
         self._evolve(dt, t_final, psi, split_step_step,
-                     output_interval, output_callback, post_step_callback, error_check_interval)
+                     output_interval, output_callback, post_step_callback, estimate_error, method_order=2)
 
     def rk4ip(self, dt, t_final, nonlocal_operator, local_operator, psi,
-              output_interval=100, output_callback=None, post_step_callback=None, error_check_interval=None):
+              output_interval=100, output_callback=None, post_step_callback=None, estimate_error=False):
         """Fourth order Runge-Kutta in the interaction picture. Uses an
         interaction picture based on an operator diagonal in Fourier space,
         which should be passed in as nonlocal_operator. It can be either an
@@ -615,7 +644,7 @@ class Simulator2D(object):
             msg = "nonlocal_operator must be OperatorSum instance or array"
             raise TypeError(msg)
 
-        # We cache these for different timesteps:
+        # We cache these for different timestep sizes:
         fourier_unitaries = {}
 
         def G(t, psi):
@@ -639,7 +668,7 @@ class Simulator2D(object):
             psi[:] = U(dt, psi_I + dt/6. * (k1 + 2*k2 + 2*k3)) + dt/6.*k4
 
         self._evolve(dt, t_final, psi, rk4ip_step,
-                     output_interval, output_callback, post_step_callback, error_check_interval)
+                     output_interval, output_callback, post_step_callback, estimate_error, method_order=4)
 
 class HDFOutput(object):
     def __init__(self, simulator, output_dir, flush_output=True):
