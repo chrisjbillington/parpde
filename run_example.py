@@ -112,5 +112,5 @@ if __name__ == '__main__':
 
     # And evolve it in time for 10ms:
     psi = bec2d.evolve(dt=dispersion_timescale/2, t_final=10e-3,
-                       H=H, psi=psi, mu=mu, method='split step', imaginary_time=False,
+                       H=H, psi=psi, mu=mu, method='rk4', imaginary_time=False,
                        output_interval=100, output_directory='evolution')

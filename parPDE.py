@@ -433,9 +433,9 @@ class Simulator2D(object):
         infodict = {"convergence": convergence_calc, 'time per step': time_per_step}
         _pre_step_checks(i, 0, psi, output_interval, output_callback, post_step_callback, infodict, final_call=True)
 
-    def rk4(self, dt, t_final, dpsi_dt, psi,
-            output_interval=100, output_callback=None, post_step_callback=None, error_check_interval=None):
-        """Fourth order Runge-Kutta. dpsi_dt should return an array for the time derivatives of psi."""
+    def _evolve(self, dt, t_final, psi, integration_step_func,
+                output_interval, output_callback, post_step_callback, error_check_interval):
+        """common loop for time integration"""
         t = 0
         i = 0
         step_error = 0
@@ -444,6 +444,8 @@ class Simulator2D(object):
         start_time = time.time()
         while not t > t_final:
 
+            # Every error_check_interval, approximate the error by taking a
+            # backward timestep and comparing with the previous solution:
             if error_check_interval is not None:
                 if not i % error_check_interval and not (error_check_forward_step or error_check_backward_step):
                     # Save the wavefunction before doing a normal step
@@ -473,19 +475,32 @@ class Simulator2D(object):
 
             time_per_step = (time.time() - start_time)/i if i else np.nan
             infodict = {'time per step': time_per_step, 'step error': step_error}
-            if not error_check_backward_step:
+            if not error_check_backward_step: # Don't do output on a backward step:
                 _pre_step_checks(i, t, psi, output_interval, output_callback, post_step_callback, infodict)
+
+            # The actual integration step:
+            integration_step_func(t, dt, psi)
+            t += dt
+            i += 1
+
+        # Ensure we output at the end:
+        time_per_step = (time.time() - start_time)/i if i else np.nan
+        infodict = {'time per step': time_per_step, 'step error': step_error}
+        _pre_step_checks(i, t, psi, output_interval, output_callback, post_step_callback, infodict, final_call=True)
+
+    def rk4(self, dt, t_final, dpsi_dt, psi,
+            output_interval=100, output_callback=None, post_step_callback=None, error_check_interval=None):
+        """Fourth order Runge-Kutta. dpsi_dt should return an array for the time derivatives of psi."""
+
+        def rk4_step(t, dt, psi):
             k1 = dpsi_dt(t, psi)
             k2 = dpsi_dt(t + 0.5*dt, psi + 0.5*k1*dt)
             k3 = dpsi_dt(t + 0.5*dt, psi + 0.5*k2*dt)
             k4 = dpsi_dt(t + dt, psi + k3*dt)
             psi[:] += dt/6*(k1 + 2*k2 + 2*k3 + k4)
-            t += dt
-            i += 1
-        time_per_step = (time.time() - start_time)/i if i else np.nan
-        infodict = {'time per step': time_per_step, 'step error': step_error}
-        _pre_step_checks(i, t, psi, output_interval, output_callback, post_step_callback, infodict, final_call=True)
 
+        self._evolve(dt, t_final, psi, rk4_step,
+                     output_interval, output_callback, post_step_callback, error_check_interval)
 
     def rk4ilip(self, dt, t_final, dpsi_dt, psi, omega_imag_provided=False,
                 output_interval=100, output_callback=None, post_step_callback=None, error_check_interval=None):
@@ -497,51 +512,15 @@ class Simulator2D(object):
         part, in which case you should set omega_imag_provided to True. This means
         real arrays can be used for arithmetic instead of complex ones, which is
         faster."""
-        t = 0
-        i = 0
-        step_error = 0
-        error_check_forward_step=False
-        error_check_backward_step=False
-        start_time = time.time()
-        while not t > t_final:
 
-            if error_check_interval is not None:
-                if not i % error_check_interval and not (error_check_forward_step or error_check_backward_step):
-                    # Save the wavefunction before doing a normal step
-                    error_check_forward_step = True
-                    psi_pre_errorcheck = psi.copy()
-                elif error_check_forward_step:
-                    error_check_forward_step = False
-                    error_check_backward_step = True
-                    # Continue from here after our backwards step:
-                    psi_post_errorcheck= psi.copy()
-                    # Do a backwards step:
-                    dt = -dt
-                elif error_check_backward_step:
-                    error_check_forward_step = False
-                    error_check_backward_step = False
-                    local_sum_squared_error = (np.abs(psi - psi_pre_errorcheck)**2).sum()
-                    local_sum_squared_error = np.asarray(local_sum_squared_error).reshape(1)
-                    total_sum_squared_error = np.zeros(1)
-                    self.MPI_comm.Allreduce(local_sum_squared_error, total_sum_squared_error, MPI.SUM)
-                    psi_norm = self.par_vdot(psi_pre_errorcheck, psi_pre_errorcheck).real
-                    step_error = np.sqrt(0.5*total_sum_squared_error/psi_norm)
-                    # Restore psi, i t, and dt:
-                    psi[:] = psi_post_errorcheck
-                    i -= 1
-                    dt = -dt
-                    t += dt
-
-            time_per_step = (time.time() - start_time)/i if i else np.nan
-            infodict = {'time per step': time_per_step, 'step error': step_error}
-            if not error_check_backward_step:
-                _pre_step_checks(i, t, psi, output_interval, output_callback, post_step_callback, infodict)
+        def rk4ilip_step(t, dt, psi):
             if omega_imag_provided:
                 # Omega is purely imaginary, and so omega_imag has been provided
                 # instead so real arithmetic can be used:
                 f1, omega_imag = dpsi_dt(t, psi)
                 i_omega = -omega_imag
-                i_omega_clipped = i_omega.clip(-400/dt, 400/dt)
+                # Have to take abs(dt) here in case we are taking a backward step (dt < 0):
+                i_omega_clipped = i_omega.clip(-400/abs(dt), 400/abs(dt))
                 U_half = np.exp(i_omega_clipped*0.5*dt)
             else:
                 f1, omega = dpsi_dt(t, psi)
@@ -550,7 +529,7 @@ class Simulator2D(object):
                     theta = omega*0.5*dt
                     U_half = np.cos(theta) + 1j*np.sin(theta) # faster than np.exp(1j*theta) when theta is real
                 else:
-                    i_omega_clipped = i_omega.real.clip(-400/dt, 400/dt) + 1j*i_omega.imag
+                    i_omega_clipped = i_omega.real.clip(-400/abs(dt), 400/abs(dt)) + 1j*i_omega.imag
                     U_half = np.exp(1j*i_omega_clipped*0.5*dt)
 
             U_full = U_half**2
@@ -576,58 +555,16 @@ class Simulator2D(object):
 
             phi_4 = psi + dt/6*(k1 + 2*k2 + 2*k3 + k4)
             psi[:] = U_dagger_full*phi_4
-            t += dt
-            i += 1
-        time_per_step = (time.time() - start_time)/i if i else np.nan
-        infodict = {'time per step': time_per_step, 'step error': step_error}
-        _pre_step_checks(i, t, psi, output_interval, output_callback, post_step_callback, infodict, final_call=True)
 
+        self._evolve(dt, t_final, psi, rk4ilip_step,
+                     output_interval, output_callback, post_step_callback, error_check_interval)
 
     def split_step(self, dt, t_final, operators, psi,
             output_interval=100, output_callback=None, post_step_callback=None, error_check_interval=None):
         """Split step method. 'operators' should return separately the nonlocal and
         local operators for time evolution."""
 
-        t = 0
-        i = 0
-        step_error = 0
-        error_check_forward_step=False
-        error_check_backward_step=False
-        start_time = time.time()
-        while not t > t_final:
-
-            if error_check_interval is not None:
-                if not i % error_check_interval and not (error_check_forward_step or error_check_backward_step):
-                    # Save the wavefunction before doing a normal step
-                    error_check_forward_step = True
-                    psi_pre_errorcheck = psi.copy()
-                elif error_check_forward_step:
-                    error_check_forward_step = False
-                    error_check_backward_step = True
-                    # Continue from here after our backwards step:
-                    psi_post_errorcheck= psi.copy()
-                    # Do a backwards step:
-                    dt = -dt
-                elif error_check_backward_step:
-                    error_check_forward_step = False
-                    error_check_backward_step = False
-                    local_sum_squared_error = (np.abs(psi - psi_pre_errorcheck)**2).sum()
-                    local_sum_squared_error = np.asarray(local_sum_squared_error).reshape(1)
-                    total_sum_squared_error = np.zeros(1)
-                    self.MPI_comm.Allreduce(local_sum_squared_error, total_sum_squared_error, MPI.SUM)
-                    psi_norm = self.par_vdot(psi_pre_errorcheck, psi_pre_errorcheck).real
-                    step_error = np.sqrt(0.5*total_sum_squared_error/psi_norm)
-                    # Restore psi, i t, and dt:
-                    psi[:] = psi_post_errorcheck
-                    i -= 1
-                    dt = -dt
-                    t += dt
-
-            time_per_step = (time.time() - start_time)/i if i else np.nan
-            infodict = {'time per step': time_per_step, 'step error': step_error}
-            if not error_check_backward_step:
-                _pre_step_checks(i, t, psi, output_interval, output_callback, post_step_callback, infodict)
-
+        def split_step_step(t, dt, psi):
             nonlocal_operator, local_operator = operators(t, psi)
             local_unitary = np.exp(dt*local_operator)
 
@@ -638,12 +575,9 @@ class Simulator2D(object):
             psi[:] *= local_unitary
             # Fourier space step:
             psi[:] = self.apply_fourier_operator(fourier_unitary, psi)
-            t += dt
-            i += 1
 
-        time_per_step = (time.time() - start_time)/i if i else np.nan
-        infodict = {'time per step': time_per_step, 'step error': step_error}
-        _pre_step_checks(i, t, psi, output_interval, output_callback, post_step_callback, infodict, final_call=True)
+        self._evolve(dt, t_final, psi, split_step_step,
+                     output_interval, output_callback, post_step_callback, error_check_interval)
 
 
 class HDFOutput(object):
