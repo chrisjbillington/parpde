@@ -1,5 +1,6 @@
 from __future__ import division, print_function
 import os
+import time
 import enum
 import numpy as np
 from mpi4py import MPI
@@ -28,7 +29,7 @@ def format_float(x, sigfigs=4, units=''):
     pre_decimal, post_decimal = divmod(significand, 1)
     digits = sigfigs - len(str(int(pre_decimal)))
     significand = round(significand, digits)
-    result = str(significand)
+    result = '%.0{}f'.format(digits) % significand
     if exponent:
         try:
             # If our number has an SI prefix then use it
@@ -154,20 +155,22 @@ class Simulator2D(object):
         self.x = np.linspace(self.x_min, self.x_max, self.nx).reshape((self.nx, 1))
         self.y = np.linspace(self.y_min, self.y_max, self.ny).reshape((1, self.ny))
 
-        self.kx = self.ky = self.f_gradx = self.grady = self.f_laplacian = None
+        self.kx = self.ky = self.f_gradx = self.grady = self.grad2x = self.grad2y = self.f_laplacian = None
         if self.MPI_size_x == 1:
             # For FFTs, which can be done only on a single node in periodic directions:
             if periodic_x:
                 self.kx = 2 * np.pi * np.fft.fftfreq(self.nx, d=self.dx).reshape((self.nx, 1))
                 # x derivative operator in Fourier space:
                 self.f_gradx = 1j*self.kx
+                self.f_grad2x = -self.kx**2
             if periodic_y:
                 self.ky = 2 * np.pi * np.fft.fftfreq(self.ny, d=self.dy).reshape((1, self.ny))
                 # y derivative operator in Fourier space:
                 self.f_grady = 1j*self.ky
+                self.f_grad2y = -self.ky**2
             if periodic_x and periodic_y:
                 # Laplace operator in Fourier space:
-                self.f_laplacian = -(self.kx**2 + self.ky**2)
+                self.f_laplacian = self.f_grad2x + self.f_grad2y
 
 
     def _setup_MPI_grid(self):
@@ -295,51 +298,69 @@ class Simulator2D(object):
         self.MPI_comm.Allreduce(local_dot, result, MPI.SUM)
         return result[0]
 
-    def par_laplacian_init(self, psi):
+    def par_operator_init(self, operator, psi, out=None):
         self.MPI_send_at_edges(psi)
-        # Compute laplacian on internal elements:
-        result = apply_operator(psi, None, None, LAPLACIAN[Operators.GRAD2X], LAPLACIAN[Operators.GRAD2X],
-                                self.dx,  self.dy, self.operator_order, out=None,
-                                left_buffer=None, right_buffer=None,
-                                bottom_buffer=None, top_buffer=None, interior=1, edges=0)
-        return result
+        gradx_coeff = operator.get(Operators.GRADX, None)
+        grady_coeff = operator.get(Operators.GRADY, None)
+        grad2x_coeff = operator.get(Operators.GRAD2X, None)
+        grad2y_coeff = operator.get(Operators.GRAD2Y, None)
+        return apply_operator(psi, gradx_coeff, grady_coeff, grad2x_coeff, grad2y_coeff,
+                              self.dx,  self.dy, self.operator_order, out=out,
+                              left_buffer=None, right_buffer=None,
+                              bottom_buffer=None, top_buffer=None, interior=True, edges=False)
 
-    def par_laplacian_finalise(self, psi, result):
+    def par_operator_finalise(self, operator, psi, out):
+        gradx_coeff = operator.get(Operators.GRADX, None)
+        grady_coeff = operator.get(Operators.GRADY, None)
+        grad2x_coeff = operator.get(Operators.GRAD2X, None)
+        grad2y_coeff = operator.get(Operators.GRAD2Y, None)
+        left_buffer, right_buffer, bottom_buffer, top_buffer = self.MPI_receive_buffers[psi.dtype.type]
         self.MPI_receive_at_edges()
-        left_buffer, right_buffer, bottom_buffer, top_buffer = self.MPI_receive_buffers[result.dtype.type]
-        result = apply_operator(psi, None, None, LAPLACIAN[Operators.GRAD2X], LAPLACIAN[Operators.GRAD2Y],
-                                        self.dx,  self.dy, self.operator_order, out=result,
-                                        left_buffer=left_buffer, right_buffer=right_buffer,
-                                        bottom_buffer=bottom_buffer, top_buffer=top_buffer, interior=0, edges=1)
-        return result
+        return apply_operator(psi, gradx_coeff, grady_coeff, grad2x_coeff, grad2y_coeff,
+                              self.dx,  self.dy, self.operator_order, out=out,
+                              left_buffer=left_buffer, right_buffer=right_buffer,
+                              bottom_buffer=bottom_buffer, top_buffer=top_buffer, interior=False, edges=True)
 
-    def par_laplacian(self, psi):
-        result = self.par_laplacian_init(psi)
-        return self.par_laplacian_finalise(psi, result)
+    def par_operator(self, psi, operator, out=None):
+        out = self.par_operator_init(psi, operator, out)
+        return self.par_operator_finalise(psi, operator, out)
 
-    def fft_laplacian(self, psi):
+    def fft_operator(self, operator, psi):
+        gradx_coeff = operator.get(Operators.GRADX, None)
+        grady_coeff = operator.get(Operators.GRADY, None)
+        grad2x_coeff = operator.get(Operators.GRAD2X, None)
+        grad2y_coeff = operator.get(Operators.GRAD2Y, None)
+
         if self.MPI_size > 1 or not (self.periodic_x and self.periodic_y):
-            msg = "FFT laplacian can only be done in a single node with periodic x and y directions"
-            raise RuntimeError(msg)
-        return ifft2(self.f_laplacian*fft2(psi))
+            msg = "FFTs can only be done on a single process with periodic boundary conditions"
+            raise ValueError(msg)
 
-    def fft_gradx(self, psi):
-        if self.MPI_size > 1 or not self.periodic_x:
-            msg = "FFT laplacian can only be done in a single node with periodic x direction"
-            raise RuntimeError(msg)
-        return ifft2(self.f_gradx*fft2(psi))
+        if any(op.shape != (1, 1) for op in operator.values()):
+            msg = "FFTs cannot be used to evaluate operators with spatially varying coefficients"
+            raise ValueError(msg)
 
-    def fft_grady(self, psi):
-        if self.MPI_size > 1 or not self.periodic_y:
-            msg = "FFT laplacian can only be done in a single node with periodic y direction"
-            raise RuntimeError(msg)
-        return ifft2(self.f_grady*fft2(psi))
+        # Compute the operator in Fourier space:
+        f_operator = 0
+        if gradx_coeff is not None:
+            f_operator = f_operator + gradx_coeff * self.f_gradx
+        if grady_coeff is not None:
+            f_operator = f_operator + grady_coeff * self.f_grady
+        if grad2x_coeff is not None:
+            f_operator = f_operator + grad2x_coeff * self.f_grad2x
+        if grad2y_coeff is not None:
+            f_operator = f_operator + grad2y_coeff * self.f_grad2y
+
+        result = ifft2(f_operator*fft2(psi))
+        if psi.dtype == np.float64 and all(op.dtype == np.float64 for op in operator.values()):
+            result = result.real
+        return result
 
 
 class HDFOutput(object):
-    def __init__(self, simulator, output_dir):
+    def __init__(self, simulator, output_dir, flush_output=True):
         self.simulator = simulator
         self.output_dir = output_dir
+        self.flush_output=flush_output
         if not simulator.MPI_rank and not os.path.isdir(self.output_dir):
             os.mkdir(self.output_dir)
         self.basename = str(simulator.MPI_rank).zfill(len(str(simulator.MPI_size))) + '.h5'
@@ -383,7 +404,7 @@ class HDFOutput(object):
         psi_dataset = self.file['psi']
         psi_dataset.resize((len(psi_dataset) + 1,) + psi_dataset.shape[1:])
         psi_dataset[-1] = psi
-        if flush:
+        if self.flush_output:
             self.file.flush()
 
     @staticmethod
@@ -412,30 +433,33 @@ class HDFOutput(object):
             yield psi
 
 
-def _pre_step_checks(i, t, psi, output_interval, output_callback, post_step_callback, final_call=False):
+def _pre_step_checks(i, t, psi, output_interval, output_callback, post_step_callback, infodict, final_call=False):
     if np.isnan(psi).any() or np.isinf(psi).any():
         raise RuntimeError('It exploded :(')
     if post_step_callback is not None:
-        post_step_callback(i, t, psi)
+        post_step_callback(i, t, psi, infodict)
     output_callback_called = False
     if output_callback is not None:
         if np.iterable(output_interval):
             if i in output_interval:
-                output_callback(i, t, psi)
+                output_callback(i, t, psi, infodict)
                 output_callback_called = True
         elif not i % output_interval:
-            output_callback(i, t, psi)
+            output_callback(i, t, psi, infodict)
             output_callback_called = True
     if final_call and not output_callback_called:
-        output_callback(i, t, psi)
+        output_callback(i, t, psi, infodict)
 
 
 def rk4(dt, t_final, dpsi_dt, psi, output_interval=100, output_callback=None, post_step_callback=None):
     """Fourth order Runge-Kutta. dpsi_dt should return an array for the time derivatives of psi."""
     t = 0
     i = 0
+    start_time = time.time()
     while not t > t_final:
-        _pre_step_checks(i, t, psi, output_interval, output_callback, post_step_callback)
+        time_per_step = (time.time() - start_time)/i if i else np.nan
+        infodict = {'time per step': time_per_step}
+        _pre_step_checks(i, t, psi, output_interval, output_callback, post_step_callback, infodict)
         k1 = dpsi_dt(t, psi)
         k2 = dpsi_dt(t + 0.5*dt, psi + 0.5*k1*dt)
         k3 = dpsi_dt(t + 0.5*dt, psi + 0.5*k2*dt)
@@ -443,7 +467,9 @@ def rk4(dt, t_final, dpsi_dt, psi, output_interval=100, output_callback=None, po
         psi[:] += dt/6*(k1 + 2*k2 + 2*k3 + k4)
         t += dt
         i += 1
-    _pre_step_checks(i, t, psi, output_interval, output_callback, post_step_callback, final_call=True)
+    time_per_step = (time.time() - start_time)/i if i else np.nan
+    infodict = {'time per step': time_per_step}
+    _pre_step_checks(i, t, psi, output_interval, output_callback, post_step_callback, infodict, final_call=True)
 
 
 def rk4ilip(dt, t_final, dpsi_dt, psi, omega_imag_provided=False,
@@ -458,8 +484,11 @@ def rk4ilip(dt, t_final, dpsi_dt, psi, omega_imag_provided=False,
     faster."""
     t = 0
     i = 0
+    start_time = time.time()
     while not t > t_final:
-        _pre_step_checks(i, t, psi, output_interval, output_callback, post_step_callback)
+        time_per_step = (time.time() - start_time)/i if i else np.nan
+        infodict = {'time per step': time_per_step}
+        _pre_step_checks(i, t, psi, output_interval, output_callback, post_step_callback, infodict)
         if omega_imag_provided:
             # Omega is purely imaginary, and so omega_imag has been provided
             # instead so real arithmetic can be used:
@@ -502,15 +531,21 @@ def rk4ilip(dt, t_final, dpsi_dt, psi, omega_imag_provided=False,
         psi[:] = U_dagger_full*phi_4
         t += dt
         i += 1
-    _pre_step_checks(i, t, psi, output_interval, output_callback, post_step_callback, final_call=True)
+    time_per_step = (time.time() - start_time)/i if i else np.nan
+    infodict = {'time per step': time_per_step}
+    _pre_step_checks(i, t, psi, output_interval, output_callback, post_step_callback, infodict, final_call=True)
 
 
 def successive_overrelaxation(simulator, system, psi, relaxation_parameter=1.7, convergence=1e-13,
                                output_interval=100, output_callback=None, post_step_callback=None,
                                convergence_check_interval=10):
     i = 0
+    start_time = time.time()
+    convergence_calc = np.nan
     while True:
-        _pre_step_checks(i, 0, psi, output_interval, output_callback, post_step_callback)
+        time_per_step = (time.time() - start_time)/i if i else np.nan
+        infodict = {"convergence": convergence_calc, 'time per step': time_per_step}
+        _pre_step_checks(i, 0, psi, output_interval, output_callback, post_step_callback, infodict)
         simulator.MPI_send_at_edges(psi)
         A_diag, A_nondiag, b = system(psi)
         if not i % convergence_check_interval:
@@ -544,5 +579,7 @@ def successive_overrelaxation(simulator, system, psi, relaxation_parameter=1.7, 
             if convergence_calc < convergence:
                 break
         i += 1
-    _pre_step_checks(i, 0, psi, output_interval, output_callback, post_step_callback, final_call=True)
+    time_per_step = (time.time() - start_time)/i if i else np.nan
+    infodict = {"convergence": convergence_calc, 'time per step': time_per_step}
+    _pre_step_checks(i, 0, psi, output_interval, output_callback, post_step_callback, infodict, final_call=True)
 

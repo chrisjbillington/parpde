@@ -54,17 +54,19 @@ dispersion_timescale = dx**2 * m / (pi * hbar)
 chemical_potential_timescale = 2*pi*hbar/mu
 potential_timescale = 2*pi*hbar/V.max()
 
+K = -hbar**2/(2*m)*LAPLACIAN
 
 def H(t, psi):
     """The Hamiltonian for single-component wavefunction psi. Returns the
     kinetic term acting on psi and the local terms (not acting on psi)
     separately."""
-    grad2psi = simulator.par_laplacian_init(psi)
-    n = abs(psi)**2
+    # Initialise parallel operator evaluation as early as possible, to allow
+    # for largest network latency:
+    K_psi = simulator.par_operator_init(K, psi)
     H_local_lin = V
-    H_local_nonlin = g * n
-    grad2psi = simulator.par_laplacian_finalise(psi, grad2psi)
-    K_psi = -hbar**2/(2*m)*grad2psi
+    H_local_nonlin = g * abs(psi)**2
+    # Finalise parallel operator evaluation as late as possible:
+    K_psi = simulator.par_operator_finalise(K, psi, K_psi)
     return K_psi, H_local_lin, H_local_nonlin
 
 

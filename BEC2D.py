@@ -13,7 +13,7 @@ class BEC2D(object):
 
         if natural_units:
             self.hbar = 1
-            self.time_units = 'time units'
+            self.time_units = 'timeunits'
         else:
             self.hbar = 1.054571726e-34
             self.time_units = 's'
@@ -73,25 +73,22 @@ class BEC2D(object):
 
         if not self.simulator.MPI_rank: # Only rank 0 should print
             print('\n==========')
-            print('Beginning successive over relaxation')
+            print('Beginning successive overrelaxation')
             print("Target chemical potential is: " + repr(mu))
             print("Convergence criterion is: {}".format(convergence))
             print('==========')
 
-        def output_callback(i, t, psi):
-            mucalc = self.compute_mu(t, psi, H)
-            convergence_calc = abs((mucalc - mu)/mu)
-            time_per_step = (time.time() - start_time)/i if i else np.nan
+        def output_callback(i, t, psi, infodict):
+            time_per_step = infodict['time per step']
+            convergence_calc = infodict['convergence']
 
-            output_log_dtype = [('step_number', int), ('mucalc', float),
-                                ('convergence', float), ('time_per_step', float)]
+            output_log_dtype = [('step_number', int), ('convergence', float), ('time_per_step', float)]
 
-            output_log_data = np.array((i, mucalc, convergence_calc, time_per_step), dtype=output_log_dtype)
+            output_log_data = np.array((i, convergence_calc, time_per_step), dtype=output_log_dtype)
 
             if output_directory is not None:
                 hdf_output.save(psi, output_log_data)
             message =  ('step: %d'%i +
-                        '  mucalc: ' + repr(mucalc) +
                         '  convergence: %E'%convergence_calc +
                         '  time per step: {}'.format(format_float(time_per_step, units='s')))
             if not self.simulator.MPI_rank: # Only rank 0 should print
@@ -100,8 +97,6 @@ class BEC2D(object):
         if output_directory is not None:
             hdf_output = HDFOutput(self.simulator, output_directory)
 
-        # Start the relaxation:
-        start_time = time.time()
         successive_overrelaxation(self.simulator, system, psi, relaxation_parameter, convergence,
                                   output_interval, output_callback, post_step_callback=None,
                                   convergence_check_interval=convergence_check_interval)
@@ -111,18 +106,21 @@ class BEC2D(object):
 
 
     def evolve(self, dt, t_final, H, psi, mu=0, method='rk4', imaginary_time=False,
-               output_interval=100, output_directory=None, post_step_callback=None):
+               output_interval=100, output_directory=None, post_step_callback=None, flush_output=True):
 
         """Evolve a wavefunction in time. Timestep, final time, the
         Hamiltonian H and the initial wavefunction are required. mu is
         optional, but will be subtracted from the Hamiltonian if provided -
         this is important in the case of imaginary time evolution, as the
-        wavefunction will relax toward this chemical potential. method can be
+        wavefunction will relax toward this chemical potential. Method can be
         either of 'rk4' or 'rk4ilip'. If output_directory is None, the output
         callback will still be called every output_interval steps, but it will
         just print statistics and not output anything to file. output_interval
-        can also be a list of integers for which steps output should be
-        saved."""
+        can also be a list of integers for which steps output should be saved.
+        If imaginary_time=True, the wavefunction is not normalised after each
+        step - it's assumed you want to relax it to the provided chemical
+        potential. If you want to normalise it every step then provide a
+        post_step_callback such as lambda i, t, psi, infodict: BEC2D.normalise(psi, N_2D)"""
         if not self.simulator.MPI_rank: # Only one process prints to stdout:
             print('\n==========')
             if imaginary_time:
@@ -161,8 +159,7 @@ class BEC2D(object):
             def dpsi_dt(t, psi):
                 """The differential equation for psi in imaginary time"""
                 K_psi, H_local_lin, H_local_nonlin = H(t, psi)
-                d_psi_dt = -1 / self.hbar * (K_psi + (H_local_lin + H_local_nonlin - mu) * psi)
-                return d_psi_dt
+                return -1 / self.hbar * (K_psi + (H_local_lin + H_local_nonlin - mu) * psi)
 
         elif method == 'rk4':
 
@@ -175,32 +172,30 @@ class BEC2D(object):
         else:
             raise ValueError(method)
 
-        def output_callback(i, t, psi):
+        def output_callback(i, t, psi, infodict):
             energy_err = self.compute_energy(t, psi, H) / E_initial - 1
             number_err = self.compute_number(psi) / n_initial - 1
-            time_per_step = (time.time() - start_time)/i if i else np.nan
+            time_per_step = infodict['time per step']
 
             output_log_dtype = [('step_number', int), ('time', float),
-                                ('number_err', float), ('energy_err', float), ('time_per_step', float)]
+                                ('number_change', float), ('energy_change', float), ('time_per_step', float)]
             output_log_data = np.array((i, t, number_err, energy_err, time_per_step), dtype=output_log_dtype)
             if output_directory is not None:
                 hdf_output.save(psi, output_log_data)
 
-            log_time_units = '' if self.natural_units else self.time_units
             message = ('step: %d' % i +
-                      '  t = {}'.format(format_float(t, units=log_time_units)) +
-                      '  number_err: %+.02E' % number_err +
-                      '  energy_err: %+.02E' % energy_err +
+                      '  t = {}'.format(format_float(t, units=self.time_units)) +
+                      '  dN/N: %+.02E' % number_err +
+                      '  dE/E: %+.02E' % energy_err +
                       '  time per step: {}'.format(format_float(time_per_step, units='s')))
             if not self.simulator.MPI_rank: # Only rank 0 should print
                 print(message)
 
         if output_directory is not None:
-            hdf_output = HDFOutput(self.simulator, output_directory)
+            hdf_output = HDFOutput(self.simulator, output_directory, flush_output=flush_output)
 
         E_initial = self.compute_energy(0, psi, H)
         n_initial = self.compute_number(psi)
-        start_time = time.time()
 
         # Start the integration:
         if method == 'rk4':
