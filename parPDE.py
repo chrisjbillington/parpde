@@ -502,6 +502,7 @@ class Simulator2D(object):
         self._evolve(dt, t_final, psi, rk4_step,
                      output_interval, output_callback, post_step_callback, error_check_interval)
 
+
     def rk4ilip(self, dt, t_final, dpsi_dt, psi, omega_imag_provided=False,
                 output_interval=100, output_callback=None, post_step_callback=None, error_check_interval=None):
         """Fourth order Runge-Kutta in an instantaneous local interaction picture.
@@ -559,26 +560,86 @@ class Simulator2D(object):
         self._evolve(dt, t_final, psi, rk4ilip_step,
                      output_interval, output_callback, post_step_callback, error_check_interval)
 
-    def split_step(self, dt, t_final, operators, psi,
+    def split_step(self, dt, t_final, nonlocal_operator, local_operator, psi,
             output_interval=100, output_callback=None, post_step_callback=None, error_check_interval=None):
-        """Split step method. 'operators' should return separately the nonlocal and
-        local operators for time evolution."""
+        """Split step method. Nonlocal_operator is an operator diagonal in
+        Fourier space. It can be either an OperatorSum instance if it is just
+        a sum of differential operators, or can be given as an array
+        representing the operator's diagonals in the Fourier basis."""
+
+        if isinstance(nonlocal_operator, OperatorSum):
+            fourier_operator = self.make_fourier_operator(nonlocal_operator)
+        elif isinstance(nonlocal_operator, np.ndarray):
+            fourier_operator = nonlocal_operator
+        else:
+            msg = "nonlocal_operator must be OperatorSum instance or array"
+            raise TypeError(msg)
+
+        # We cache these for different timesteps:
+        fourier_unitaries = {}
+
+        def U(dt, psi):
+            try:
+                unitary = fourier_unitaries[dt]
+            except KeyError:
+                unitary = np.exp(dt*fourier_operator)
+                fourier_unitaries[dt] = unitary
+            return self.apply_fourier_operator(unitary, psi)
 
         def split_step_step(t, dt, psi):
-            nonlocal_operator, local_operator = operators(t, psi)
-            local_unitary = np.exp(dt*local_operator)
-
-            fourier_operator = self.make_fourier_operator(nonlocal_operator)
-            fourier_unitary = np.exp(dt*fourier_operator)
-
             # Real space step:
+            local_unitary = np.exp(dt*local_operator(t, psi))
             psi[:] *= local_unitary
             # Fourier space step:
-            psi[:] = self.apply_fourier_operator(fourier_unitary, psi)
+            psi[:] =  U(dt, psi)
 
         self._evolve(dt, t_final, psi, split_step_step,
                      output_interval, output_callback, post_step_callback, error_check_interval)
 
+    def rk4ip(self, dt, t_final, nonlocal_operator, local_operator, psi,
+              output_interval=100, output_callback=None, post_step_callback=None, error_check_interval=None):
+        """Fourth order Runge-Kutta in the interaction picture. Uses an
+        interaction picture based on an operator diagonal in Fourier space,
+        which should be passed in as nonlocal_operator. It can be either an
+        OperatorSum instance if it is just a sum of differential operators, or
+        can be given as an array representing the operator's diagonals in the
+        Fourier basis. The rest of the equation is solved based on an operator
+        diagonal in real space, which the function local_operator should
+        return."""
+
+        if isinstance(nonlocal_operator, OperatorSum):
+            fourier_operator = self.make_fourier_operator(nonlocal_operator)
+        elif isinstance(nonlocal_operator, np.ndarray):
+            fourier_operator = nonlocal_operator
+        else:
+            msg = "nonlocal_operator must be OperatorSum instance or array"
+            raise TypeError(msg)
+
+        # We cache these for different timesteps:
+        fourier_unitaries = {}
+
+        def G(t, psi):
+            return local_operator(t, psi)*psi
+
+        def U(dt, psi):
+            try:
+                unitary = fourier_unitaries[dt]
+            except KeyError:
+                unitary = np.exp(0.5*dt*fourier_operator)
+                fourier_unitaries[dt] = unitary
+            return self.apply_fourier_operator(unitary, psi)
+
+        def rk4ip_step(t, dt, psi):
+            """The propagator for one step of the RK4IP method"""
+            psi_I = U(dt, psi)
+            k1 = U(dt, G(t, psi))
+            k2 = G(t + 0.5*dt, psi_I + 0.5*dt*k1)
+            k3 = G(t + 0.5*dt, psi_I + 0.5*dt*k2)
+            k4 = G(t + dt, U(dt, psi_I + dt*k3))
+            psi[:] = U(dt, psi_I + dt/6. * (k1 + 2*k2 + 2*k3)) + dt/6.*k4
+
+        self._evolve(dt, t_final, psi, rk4ip_step,
+                     output_interval, output_callback, post_step_callback, error_check_interval)
 
 class HDFOutput(object):
     def __init__(self, simulator, output_dir, flush_output=True):

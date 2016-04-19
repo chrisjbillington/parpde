@@ -12,6 +12,7 @@ pi = np.pi
 from parPDE import HDFOutput
 
 def plot(name, i, psi):
+    psi = psi.transpose()
     rho = np.abs(psi)**2
     phase = np.angle(psi)
     hsl = np.zeros(psi.shape + (3,))

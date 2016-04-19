@@ -134,7 +134,44 @@ class BEC2D(object):
 
         # Pick a differential equation based on the requirements of the method
         # being used, and whether we are evolving in imaginary time or not:
-        if method == 'rk4ilip':
+        if method == 'rk4':
+            if imaginary_time:
+
+                def dpsi_dt(t, psi):
+                    """The differential equation for psi in imaginary time"""
+                    K, H_local_lin, H_local_nonlin = H(t, psi)
+                    K_psi = self.simulator.par_operator(K, psi)
+                    return -1 / self.hbar * (K_psi + (H_local_lin + H_local_nonlin - mu) * psi)
+
+            else:
+
+                def dpsi_dt(t, psi):
+                    """The differential equation for psi"""
+                    K, H_local_lin, H_local_nonlin = H(t, psi)
+                    K_psi = self.simulator.par_operator(K, psi)
+                    d_psi_dt = -1j / self.hbar * (K_psi + (H_local_lin + H_local_nonlin - mu) * psi)
+                    return d_psi_dt
+
+        elif method == 'rk4ip' or method == 'split step':
+            if imaginary_time:
+                K, _, _ = H(0, psi)
+                nonlocal_operator = -1/self.hbar * K
+
+                def local_operator(t, psi):
+                    K, H_local_lin, H_local_nonlin = H(t, psi)
+                    local_operator = -1/self.hbar * (H_local_lin + H_local_nonlin - mu)
+                    return local_operator
+
+            else:
+                K, _, _ = H(0, psi)
+                nonlocal_operator = -1j/self.hbar * K
+
+                def local_operator(t, psi):
+                    K, H_local_lin, H_local_nonlin = H(t, psi)
+                    local_operator = -1j/self.hbar * (H_local_lin + H_local_nonlin - mu)
+                    return local_operator
+
+        elif method == 'rk4ilip':
             if imaginary_time:
                 omega_imag_provided=True
 
@@ -160,43 +197,8 @@ class BEC2D(object):
                     d_psi_dt = -1j / self.hbar * K_psi -1j*omega * psi
                     return d_psi_dt, omega
 
-        elif method == 'rk4':
-            if imaginary_time:
-
-                def dpsi_dt(t, psi):
-                    """The differential equation for psi in imaginary time"""
-                    K, H_local_lin, H_local_nonlin = H(t, psi)
-                    K_psi = self.simulator.par_operator(K, psi)
-                    return -1 / self.hbar * (K_psi + (H_local_lin + H_local_nonlin - mu) * psi)
-
-            else:
-
-                def dpsi_dt(t, psi):
-                    """The differential equation for psi"""
-                    K, H_local_lin, H_local_nonlin = H(t, psi)
-                    K_psi = self.simulator.par_operator(K, psi)
-                    d_psi_dt = -1j / self.hbar * (K_psi + (H_local_lin + H_local_nonlin - mu) * psi)
-                    return d_psi_dt
-
-        elif method == 'split step':
-            if imaginary_time:
-
-                def split_step_operators(t, psi):
-                    K, H_local_lin, H_local_nonlin = H(t, psi)
-                    fourier_operators = -1/self.hbar * K
-                    local_operators = -1/self.hbar * (H_local_lin + H_local_nonlin)
-                    return fourier_operators, local_operators
-
-            else:
-
-                def split_step_operators(t, psi):
-                    K, H_local_lin, H_local_nonlin = H(t, psi)
-                    fourier_operators = -1j/self.hbar * K
-                    local_operators = -1j/self.hbar * (H_local_lin + H_local_nonlin)
-                    return fourier_operators, local_operators
-
         else:
-            msg = "method must be one of 'rk4', 'rk4ilip', or 'split step'"
+            msg = "method must be one of 'rk4', 'rk4ilip', 'rk4ip', or 'split step'"
             raise ValueError(msg)
 
         def output_callback(i, t, psi, infodict):
@@ -231,13 +233,18 @@ class BEC2D(object):
         if method == 'rk4':
             self.simulator.rk4(dt, t_final, dpsi_dt, psi, output_interval=output_interval,output_callback=output_callback,
                                post_step_callback=post_step_callback, error_check_interval=error_check_interval)
+        elif method == 'rk4ip':
+            self.simulator.rk4ip(dt, t_final, nonlocal_operator, local_operator, psi,
+                                 output_interval=output_interval, output_callback=output_callback,
+                                 post_step_callback=post_step_callback, error_check_interval=error_check_interval)
         elif method == 'rk4ilip':
             self.simulator.rk4ilip(dt, t_final, dpsi_dt, psi, omega_imag_provided, output_interval=output_interval,
-                    output_callback=output_callback, post_step_callback=post_step_callback,
-                    error_check_interval=error_check_interval)
+                                   output_callback=output_callback, post_step_callback=post_step_callback,
+                                   error_check_interval=error_check_interval)
         elif method == 'split step':
-            self.simulator.split_step(dt, t_final, split_step_operators, psi, output_interval=output_interval,
-                    output_callback=output_callback, post_step_callback=post_step_callback,
-                    error_check_interval=error_check_interval)
+            self.simulator.split_step(dt, t_final, nonlocal_operator, local_operator, psi,
+                                      output_interval=output_interval, output_callback=output_callback,
+                                      post_step_callback=post_step_callback,
+                                      error_check_interval=error_check_interval)
 
         return psi
