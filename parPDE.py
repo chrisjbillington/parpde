@@ -119,6 +119,24 @@ def get_best_2D_segmentation(size_x, size_y, N_segments):
     return best_n_segments_x, best_n_segments_y
 
 
+def _pre_step_checks(i, t, psi, output_interval, output_callback, post_step_callback, infodict, final_call=False):
+    if np.isnan(psi).any() or np.isinf(psi).any():
+        raise RuntimeError('It exploded :(')
+    if post_step_callback is not None:
+        post_step_callback(i, t, psi, infodict)
+    output_callback_called = False
+    if output_callback is not None:
+        if np.iterable(output_interval):
+            if i in output_interval:
+                output_callback(i, t, psi, infodict)
+                output_callback_called = True
+        elif not i % output_interval:
+            output_callback(i, t, psi, infodict)
+            output_callback_called = True
+    if final_call and not output_callback_called:
+        output_callback(i, t, psi, infodict)
+
+
 class Simulator2D(object):
     def __init__(self, x_min_global, x_max_global, y_min_global, y_max_global, nx_global, ny_global,
                  periodic_x=False, periodic_y=False, operator_order=4):
@@ -355,6 +373,200 @@ class Simulator2D(object):
             result = result.real
         return result
 
+    def successive_overrelaxation(self, system, psi, relaxation_parameter=1.7, convergence=1e-13,
+                                   output_interval=100, output_callback=None, post_step_callback=None,
+                                   convergence_check_interval=10):
+        i = 0
+        start_time = time.time()
+        convergence_calc = np.nan
+        while True:
+            time_per_step = (time.time() - start_time)/i if i else np.nan
+            infodict = {"convergence": convergence_calc, 'time per step': time_per_step}
+            _pre_step_checks(i, 0, psi, output_interval, output_callback, post_step_callback, infodict)
+            self.MPI_send_at_edges(psi)
+            A_diag, A_nondiag, b = system(psi)
+            if not i % convergence_check_interval:
+                # Only compute the error every convergence_check_interval steps to save time
+                compute_error=True
+                integral_b = self.par_vdot(b, b).real
+            else:
+                compute_error = False
+
+            gradx_coeff = A_nondiag.get(Operators.GRADX, None)
+            grady_coeff = A_nondiag.get(Operators.GRADY, None)
+            grad2x_coeff = A_nondiag.get(Operators.GRAD2X, None)
+            grad2y_coeff = A_nondiag.get(Operators.GRAD2Y, None)
+
+            squared_error = SOR_step(psi, A_diag, gradx_coeff, grady_coeff, grad2x_coeff, grad2y_coeff, b,
+                                     self.dx, self.dy, relaxation_parameter, self.operator_order,
+                                     interior=True, edges=False)
+
+            self.MPI_receive_at_edges()
+            left_buffer, right_buffer, bottom_buffer, top_buffer = self.MPI_receive_buffers[psi.dtype.type]
+
+            squared_error = SOR_step(psi, A_diag, gradx_coeff, grady_coeff, grad2x_coeff, grad2y_coeff, b,
+                                     self.dx, self.dy, relaxation_parameter, self.operator_order,
+                                     left_buffer, right_buffer, bottom_buffer, top_buffer,
+                                     squared_error=squared_error, interior=False, edges=True)
+            if compute_error:
+                squared_error = np.asarray(squared_error).reshape(1)
+                total_squared_error = np.zeros(1)
+                self.MPI_comm.Allreduce(squared_error, total_squared_error, MPI.SUM)
+                convergence_calc = np.sqrt(total_squared_error[0]/integral_b)
+                if convergence_calc < convergence:
+                    break
+            i += 1
+        time_per_step = (time.time() - start_time)/i if i else np.nan
+        infodict = {"convergence": convergence_calc, 'time per step': time_per_step}
+        _pre_step_checks(i, 0, psi, output_interval, output_callback, post_step_callback, infodict, final_call=True)
+
+    def rk4(self, dt, t_final, dpsi_dt, psi,
+            output_interval=100, output_callback=None, post_step_callback=None, error_check_interval=None):
+        """Fourth order Runge-Kutta. dpsi_dt should return an array for the time derivatives of psi."""
+        t = 0
+        i = 0
+        step_error = 0
+        error_check_forward_step=False
+        error_check_backward_step=False
+        start_time = time.time()
+        while not t > t_final:
+
+            if error_check_interval is not None:
+                if not i % error_check_interval and not (error_check_forward_step or error_check_backward_step):
+                    # Save the wavefunction before doing a normal step
+                    error_check_forward_step = True
+                    psi_pre_errorcheck = psi.copy()
+                elif error_check_forward_step:
+                    error_check_forward_step = False
+                    error_check_backward_step = True
+                    # Continue from here after our backwards step:
+                    psi_post_errorcheck= psi.copy()
+                    # Do a backwards step:
+                    dt = -dt
+                elif error_check_backward_step:
+                    error_check_forward_step = False
+                    error_check_backward_step = False
+                    local_sum_squared_error = (np.abs(psi - psi_pre_errorcheck)**2).sum()
+                    local_sum_squared_error = np.asarray(local_sum_squared_error).reshape(1)
+                    total_sum_squared_error = np.zeros(1)
+                    self.MPI_comm.Allreduce(local_sum_squared_error, total_sum_squared_error, MPI.SUM)
+                    psi_norm = self.par_vdot(psi_pre_errorcheck, psi_pre_errorcheck).real
+                    step_error = np.sqrt(0.5*total_sum_squared_error/psi_norm)
+                    # Restore psi, i t, and dt:
+                    psi[:] = psi_post_errorcheck
+                    i -= 1
+                    dt = -dt
+                    t += dt
+
+            time_per_step = (time.time() - start_time)/i if i else np.nan
+            infodict = {'time per step': time_per_step, 'step error': step_error}
+            _pre_step_checks(i, t, psi, output_interval, output_callback, post_step_callback, infodict)
+            k1 = dpsi_dt(t, psi)
+            k2 = dpsi_dt(t + 0.5*dt, psi + 0.5*k1*dt)
+            k3 = dpsi_dt(t + 0.5*dt, psi + 0.5*k2*dt)
+            k4 = dpsi_dt(t + dt, psi + k3*dt)
+            psi[:] += dt/6*(k1 + 2*k2 + 2*k3 + k4)
+            t += dt
+            i += 1
+        time_per_step = (time.time() - start_time)/i if i else np.nan
+        infodict = {'time per step': time_per_step, 'step error': step_error}
+        _pre_step_checks(i, t, psi, output_interval, output_callback, post_step_callback, infodict, final_call=True)
+
+
+    def rk4ilip(self, dt, t_final, dpsi_dt, psi, omega_imag_provided=False,
+                output_interval=100, output_callback=None, post_step_callback=None, error_check_interval=None):
+        """Fourth order Runge-Kutta in an instantaneous local interaction picture.
+        dpsi_dt should return both the derivative of psi, and an array omega,
+        which is H_local/hbar at each point in space (Note that H_local should not
+        be excluded from the calculation of dpsi_dt). If omega is purely
+        imaginary, you can instead return the omega_imag comprising its imaginary
+        part, in which case you should set omega_imag_provided to True. This means
+        real arrays can be used for arithmetic instead of complex ones, which is
+        faster."""
+        t = 0
+        i = 0
+        step_error = 0
+        error_check_forward_step=False
+        error_check_backward_step=False
+        start_time = time.time()
+        while not t > t_final:
+
+            if error_check_interval is not None:
+                if not i % error_check_interval and not (error_check_forward_step or error_check_backward_step):
+                    # Save the wavefunction before doing a normal step
+                    error_check_forward_step = True
+                    psi_pre_errorcheck = psi.copy()
+                elif error_check_forward_step:
+                    error_check_forward_step = False
+                    error_check_backward_step = True
+                    # Continue from here after our backwards step:
+                    psi_post_errorcheck= psi.copy()
+                    # Do a backwards step:
+                    dt = -dt
+                elif error_check_backward_step:
+                    error_check_forward_step = False
+                    error_check_backward_step = False
+                    local_sum_squared_error = (np.abs(psi - psi_pre_errorcheck)**2).sum()
+                    local_sum_squared_error = np.asarray(local_sum_squared_error).reshape(1)
+                    total_sum_squared_error = np.zeros(1)
+                    self.MPI_comm.Allreduce(local_sum_squared_error, total_sum_squared_error, MPI.SUM)
+                    psi_norm = self.par_vdot(psi_pre_errorcheck, psi_pre_errorcheck).real
+                    step_error = np.sqrt(0.5*total_sum_squared_error/psi_norm)
+                    # Restore psi, i t, and dt:
+                    psi[:] = psi_post_errorcheck
+                    i -= 1
+                    dt = -dt
+                    t += dt
+
+            time_per_step = (time.time() - start_time)/i if i else np.nan
+            infodict = {'time per step': time_per_step, 'step error': step_error}
+            _pre_step_checks(i, t, psi, output_interval, output_callback, post_step_callback, infodict)
+            if omega_imag_provided:
+                # Omega is purely imaginary, and so omega_imag has been provided
+                # instead so real arithmetic can be used:
+                f1, omega_imag = dpsi_dt(t, psi)
+                i_omega = -omega_imag
+                i_omega_clipped = i_omega.clip(-400/dt, 400/dt)
+                U_half = np.exp(i_omega_clipped*0.5*dt)
+            else:
+                f1, omega = dpsi_dt(t, psi)
+                i_omega = 1j*omega
+                if omega.dtype == np.float64:
+                    theta = omega*0.5*dt
+                    U_half = np.cos(theta) + 1j*np.sin(theta) # faster than np.exp(1j*theta) when theta is real
+                else:
+                    i_omega_clipped = i_omega.real.clip(-400/dt, 400/dt) + 1j*i_omega.imag
+                    U_half = np.exp(1j*i_omega_clipped*0.5*dt)
+
+            U_full = U_half**2
+            U_dagger_half = 1/U_half
+            U_dagger_full = 1/U_full
+
+            k1 = f1 + i_omega*psi
+
+            phi_1 = psi + 0.5*k1*dt
+            psi_1 = U_dagger_half*phi_1
+            f2, _ = dpsi_dt(t + 0.5*dt, psi_1)
+            k2 = U_half*f2 + i_omega*phi_1
+
+            phi_2 = psi + 0.5*k2*dt
+            psi_2 = U_dagger_half*phi_2
+            f3, _ = dpsi_dt(t + 0.5*dt, psi_2)
+            k3 = U_half*f3 + i_omega*phi_2
+
+            phi_3 = psi + k3*dt
+            psi_3 = U_dagger_full*phi_3
+            f4, _ = dpsi_dt(t + dt, psi_3)
+            k4 = U_full*f4 + i_omega*phi_3
+
+            phi_4 = psi + dt/6*(k1 + 2*k2 + 2*k3 + k4)
+            psi[:] = U_dagger_full*phi_4
+            t += dt
+            i += 1
+        time_per_step = (time.time() - start_time)/i if i else np.nan
+        infodict = {'time per step': time_per_step, 'step error': step_error}
+        _pre_step_checks(i, t, psi, output_interval, output_callback, post_step_callback, infodict, final_call=True)
+
 
 class HDFOutput(object):
     def __init__(self, simulator, output_dir, flush_output=True):
@@ -433,153 +645,6 @@ class HDFOutput(object):
             yield psi
 
 
-def _pre_step_checks(i, t, psi, output_interval, output_callback, post_step_callback, infodict, final_call=False):
-    if np.isnan(psi).any() or np.isinf(psi).any():
-        raise RuntimeError('It exploded :(')
-    if post_step_callback is not None:
-        post_step_callback(i, t, psi, infodict)
-    output_callback_called = False
-    if output_callback is not None:
-        if np.iterable(output_interval):
-            if i in output_interval:
-                output_callback(i, t, psi, infodict)
-                output_callback_called = True
-        elif not i % output_interval:
-            output_callback(i, t, psi, infodict)
-            output_callback_called = True
-    if final_call and not output_callback_called:
-        output_callback(i, t, psi, infodict)
 
 
-def rk4(dt, t_final, dpsi_dt, psi, output_interval=100, output_callback=None, post_step_callback=None):
-    """Fourth order Runge-Kutta. dpsi_dt should return an array for the time derivatives of psi."""
-    t = 0
-    i = 0
-    start_time = time.time()
-    while not t > t_final:
-        time_per_step = (time.time() - start_time)/i if i else np.nan
-        infodict = {'time per step': time_per_step}
-        _pre_step_checks(i, t, psi, output_interval, output_callback, post_step_callback, infodict)
-        k1 = dpsi_dt(t, psi)
-        k2 = dpsi_dt(t + 0.5*dt, psi + 0.5*k1*dt)
-        k3 = dpsi_dt(t + 0.5*dt, psi + 0.5*k2*dt)
-        k4 = dpsi_dt(t + dt, psi + k3*dt)
-        psi[:] += dt/6*(k1 + 2*k2 + 2*k3 + k4)
-        t += dt
-        i += 1
-    time_per_step = (time.time() - start_time)/i if i else np.nan
-    infodict = {'time per step': time_per_step}
-    _pre_step_checks(i, t, psi, output_interval, output_callback, post_step_callback, infodict, final_call=True)
-
-
-def rk4ilip(dt, t_final, dpsi_dt, psi, omega_imag_provided=False,
-            output_interval=100, output_callback=None, post_step_callback=None):
-    """Fourth order Runge-Kutta in an instantaneous local interaction picture.
-    dpsi_dt should return both the derivative of psi, and an array omega,
-    which is H_local/hbar at each point in space (Note that H_local should not
-    be excluded from the calculation of dpsi_dt). If omega is purely
-    imaginary, you can instead return the omega_imag comprising its imaginary
-    part, in which case you should set omega_imag_provided to True. This means
-    real arrays can be used for arithmetic instead of complex ones, which is
-    faster."""
-    t = 0
-    i = 0
-    start_time = time.time()
-    while not t > t_final:
-        time_per_step = (time.time() - start_time)/i if i else np.nan
-        infodict = {'time per step': time_per_step}
-        _pre_step_checks(i, t, psi, output_interval, output_callback, post_step_callback, infodict)
-        if omega_imag_provided:
-            # Omega is purely imaginary, and so omega_imag has been provided
-            # instead so real arithmetic can be used:
-            f1, omega_imag = dpsi_dt(t, psi)
-            i_omega = -omega_imag
-            i_omega_clipped = i_omega.clip(-400/dt, 400/dt)
-            U_half = np.exp(i_omega_clipped*0.5*dt)
-        else:
-            f1, omega = dpsi_dt(t, psi)
-            i_omega = 1j*omega
-            if omega.dtype == np.float64:
-                theta = omega*0.5*dt
-                U_half = np.cos(theta) + 1j*np.sin(theta) # faster than np.exp(1j*theta) when theta is real
-            else:
-                i_omega_clipped = i_omega.real.clip(-400/dt, 400/dt) + 1j*i_omega.imag
-                U_half = np.exp(1j*i_omega_clipped*0.5*dt)
-
-        U_full = U_half**2
-        U_dagger_half = 1/U_half
-        U_dagger_full = 1/U_full
-
-        k1 = f1 + i_omega*psi
-
-        phi_1 = psi + 0.5*k1*dt
-        psi_1 = U_dagger_half*phi_1
-        f2, _ = dpsi_dt(t + 0.5*dt, psi_1)
-        k2 = U_half*f2 + i_omega*phi_1
-
-        phi_2 = psi + 0.5*k2*dt
-        psi_2 = U_dagger_half*phi_2
-        f3, _ = dpsi_dt(t + 0.5*dt, psi_2)
-        k3 = U_half*f3 + i_omega*phi_2
-
-        phi_3 = psi + k3*dt
-        psi_3 = U_dagger_full*phi_3
-        f4, _ = dpsi_dt(t + dt, psi_3)
-        k4 = U_full*f4 + i_omega*phi_3
-
-        phi_4 = psi + dt/6*(k1 + 2*k2 + 2*k3 + k4)
-        psi[:] = U_dagger_full*phi_4
-        t += dt
-        i += 1
-    time_per_step = (time.time() - start_time)/i if i else np.nan
-    infodict = {'time per step': time_per_step}
-    _pre_step_checks(i, t, psi, output_interval, output_callback, post_step_callback, infodict, final_call=True)
-
-
-def successive_overrelaxation(simulator, system, psi, relaxation_parameter=1.7, convergence=1e-13,
-                               output_interval=100, output_callback=None, post_step_callback=None,
-                               convergence_check_interval=10):
-    i = 0
-    start_time = time.time()
-    convergence_calc = np.nan
-    while True:
-        time_per_step = (time.time() - start_time)/i if i else np.nan
-        infodict = {"convergence": convergence_calc, 'time per step': time_per_step}
-        _pre_step_checks(i, 0, psi, output_interval, output_callback, post_step_callback, infodict)
-        simulator.MPI_send_at_edges(psi)
-        A_diag, A_nondiag, b = system(psi)
-        if not i % convergence_check_interval:
-            # Only compute the error every convergence_check_interval steps to save time
-            compute_error=True
-            integral_b = simulator.par_vdot(b, b).real
-        else:
-            compute_error = False
-
-        gradx_coeff = A_nondiag.get(Operators.GRADX, None)
-        grady_coeff = A_nondiag.get(Operators.GRADY, None)
-        grad2x_coeff = A_nondiag.get(Operators.GRAD2X, None)
-        grad2y_coeff = A_nondiag.get(Operators.GRAD2Y, None)
-
-        squared_error = SOR_step(psi, A_diag, gradx_coeff, grady_coeff, grad2x_coeff, grad2y_coeff, b,
-                                 simulator.dx, simulator.dy, relaxation_parameter, simulator.operator_order,
-                                 interior=True, edges=False)
-
-        simulator.MPI_receive_at_edges()
-        left_buffer, right_buffer, bottom_buffer, top_buffer = simulator.MPI_receive_buffers[psi.dtype.type]
-
-        squared_error = SOR_step(psi, A_diag, gradx_coeff, grady_coeff, grad2x_coeff, grad2y_coeff, b,
-                                 simulator.dx, simulator.dy, relaxation_parameter, simulator.operator_order,
-                                 left_buffer, right_buffer, bottom_buffer, top_buffer,
-                                 squared_error=squared_error, interior=False, edges=True)
-        if compute_error:
-            squared_error = np.asarray(squared_error).reshape(1)
-            total_squared_error = np.zeros(1)
-            simulator.MPI_comm.Allreduce(squared_error, total_squared_error, MPI.SUM)
-            convergence_calc = np.sqrt(total_squared_error[0]/integral_b)
-            if convergence_calc < convergence:
-                break
-        i += 1
-    time_per_step = (time.time() - start_time)/i if i else np.nan
-    infodict = {"convergence": convergence_calc, 'time per step': time_per_step}
-    _pre_step_checks(i, 0, psi, output_interval, output_callback, post_step_callback, infodict, final_call=True)
 

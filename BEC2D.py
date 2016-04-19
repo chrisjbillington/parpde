@@ -1,7 +1,6 @@
 from __future__ import division, print_function
-import time
 import numpy as np
-from parPDE import rk4, rk4ilip, successive_overrelaxation, HDFOutput, format_float
+from parPDE import HDFOutput, format_float
 
 
 class BEC2D(object):
@@ -89,15 +88,15 @@ class BEC2D(object):
             if output_directory is not None:
                 hdf_output.save(psi, output_log_data)
             message =  ('step: %d'%i +
-                        '  convergence: %E'%convergence_calc +
-                        '  time per step: {}'.format(format_float(time_per_step, units='s')))
+                        ' | convergence: %E'%convergence_calc +
+                        ' | time per step: {}'.format(format_float(time_per_step, units='s')))
             if not self.simulator.MPI_rank: # Only rank 0 should print
                 print(message)
 
         if output_directory is not None:
             hdf_output = HDFOutput(self.simulator, output_directory)
 
-        successive_overrelaxation(self.simulator, system, psi, relaxation_parameter, convergence,
+        self.simulator.successive_overrelaxation(system, psi, relaxation_parameter, convergence,
                                   output_interval, output_callback, post_step_callback=None,
                                   convergence_check_interval=convergence_check_interval)
         if not self.simulator.MPI_rank: # Only rank 0 should print
@@ -106,7 +105,8 @@ class BEC2D(object):
 
 
     def evolve(self, dt, t_final, H, psi, mu=0, method='rk4', imaginary_time=False,
-               output_interval=100, output_directory=None, post_step_callback=None, flush_output=True):
+               output_interval=100, output_directory=None, post_step_callback=None, flush_output=True,
+               error_check_interval=10):
 
         """Evolve a wavefunction in time. Timestep, final time, the
         Hamiltonian H and the initial wavefunction are required. mu is
@@ -176,18 +176,21 @@ class BEC2D(object):
             energy_err = self.compute_energy(t, psi, H) / E_initial - 1
             number_err = self.compute_number(psi) / n_initial - 1
             time_per_step = infodict['time per step']
+            step_err = infodict['step error']
 
-            output_log_dtype = [('step_number', int), ('time', float),
-                                ('number_change', float), ('energy_change', float), ('time_per_step', float)]
-            output_log_data = np.array((i, t, number_err, energy_err, time_per_step), dtype=output_log_dtype)
+            output_log_dtype = [('step', int), ('time', float),
+                                ('dN/N', float), ('dE/E', float),
+                                ('step err', float), ('time per step', float)]
+            output_log_data = np.array((i, t, number_err, energy_err, step_err, time_per_step), dtype=output_log_dtype)
             if output_directory is not None:
                 hdf_output.save(psi, output_log_data)
 
             message = ('step: %d' % i +
-                      '  t = {}'.format(format_float(t, units=self.time_units)) +
-                      '  dN/N: %+.02E' % number_err +
-                      '  dE/E: %+.02E' % energy_err +
-                      '  time per step: {}'.format(format_float(time_per_step, units='s')))
+                      ' | t = {}'.format(format_float(t, units=self.time_units)) +
+                      ' | dN/N: %+.02E' % number_err +
+                      ' | dE/E: %+.02E' % energy_err +
+                      ' | step err: %.03E' % step_err +
+                      ' | time per step: {}'.format(format_float(time_per_step, units='s')))
             if not self.simulator.MPI_rank: # Only rank 0 should print
                 print(message)
 
@@ -199,10 +202,11 @@ class BEC2D(object):
 
         # Start the integration:
         if method == 'rk4':
-            rk4(dt, t_final, dpsi_dt, psi,
-                output_interval=output_interval, output_callback=output_callback, post_step_callback=post_step_callback)
+            self.simulator.rk4(dt, t_final, dpsi_dt, psi, output_interval=output_interval,output_callback=output_callback,
+                               post_step_callback=post_step_callback, error_check_interval=error_check_interval)
         elif method == 'rk4ilip':
-            rk4ilip(dt, t_final, dpsi_dt, psi, omega_imag_provided, output_interval=output_interval,
-                    output_callback=output_callback, post_step_callback=post_step_callback)
+            self.simulator.rk4ilip(dt, t_final, dpsi_dt, psi, omega_imag_provided, output_interval=output_interval,
+                    output_callback=output_callback, post_step_callback=post_step_callback,
+                    error_check_interval=error_check_interval)
 
         return psi
