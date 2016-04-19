@@ -22,7 +22,8 @@ class BEC2D(object):
         offset, for example) corresponding a given Hamiltonian, where H is a
         function that returns the result of that Hamiltonian applied to psi."""
         ncalc = self.compute_number(psi)
-        K_psi, H_local_lin, H_local_nonlin = H(t, psi)
+        K, H_local_lin, H_local_nonlin = H(t, psi)
+        K_psi = self.simulator.par_operator(K, psi)
         H_psi = K_psi + (H_local_lin + H_local_nonlin)*psi
         mucalc = self.simulator.par_vdot(psi, H_psi) * self.dx * self.dy / ncalc
         return mucalc.real
@@ -31,7 +32,8 @@ class BEC2D(object):
         """Computes approximate chemical potential (for use as a global energy
         offset, for example) corresponding a given Hamiltonian, where H is a
         function that returns the result of that Hamiltonian applied to psi."""
-        K_psi, H_local_lin, H_local_nonlin = H(t, psi)
+        K, H_local_lin, H_local_nonlin = H(t, psi)
+        K_psi = self.simulator.par_operator(K, psi)
         # Total energy operator. Differs from total Hamiltonian in that the
         # nonlinear term is halved in order to avoid double counting the
         # interaction energy:
@@ -127,50 +129,75 @@ class BEC2D(object):
                 print("Beginning {}{} of imaginary time evolution".format(format_float(t_final), self.time_units))
             else:
                 print("Beginning {}{} of time evolution".format(format_float(t_final), self.time_units))
-            print('Using dt = {}{}'.format(format_float(dt), self.time_units))
+            print('Using method: {} with dt = {}{}'.format(method, format_float(dt), self.time_units))
             print('==========')
 
-        if imaginary_time and method == 'rk4ilip':
-            omega_imag_provided=True
+        # Pick a differential equation based on the requirements of the method
+        # being used, and whether we are evolving in imaginary time or not:
+        if method == 'rk4ilip':
+            if imaginary_time:
+                omega_imag_provided=True
 
-            def dpsi_dt(t, psi):
-                """The differential equation for psi in imaginary time, as
-                well as the angular frequencies corresponding to the spatial
-                part of the Hamiltonian for use with the RK4ILIP method"""
-                K_psi, H_local_lin, H_local_nonlin = H(t, psi)
-                omega_imag = -(H_local_lin + H_local_nonlin - mu)/self.hbar
-                d_psi_dt = -1 / self.hbar * K_psi + omega_imag * psi
-                return d_psi_dt, omega_imag
+                def dpsi_dt(t, psi):
+                    """The differential equation for psi in imaginary time, as
+                    well as the angular frequencies corresponding to the spatial
+                    part of the Hamiltonian for use with the RK4ILIP method"""
+                    K, H_local_lin, H_local_nonlin = H(t, psi)
+                    K_psi = self.simulator.par_operator(K, psi)
+                    omega_imag = -(H_local_lin + H_local_nonlin - mu)/self.hbar
+                    d_psi_dt = -1 / self.hbar * K_psi + omega_imag * psi
+                    return d_psi_dt, omega_imag
+            else:
+                omega_imag_provided=False
 
-        elif method == 'rk4ilip':
-            omega_imag_provided=False
-
-            def dpsi_dt(t, psi):
-                """The differential equation for psi, as well as the angular
-                frequencies corresponding to the spatial part of the
-                Hamiltonian for use with the RK4ILIP method"""
-                K_psi, H_local_lin, H_local_nonlin = H(t, psi)
-                omega = (H_local_lin + H_local_nonlin - mu)/self.hbar
-                d_psi_dt = -1j / self.hbar * K_psi -1j*omega * psi
-                return d_psi_dt, omega
-
-        elif imaginary_time and method == 'rk4':
-
-            def dpsi_dt(t, psi):
-                """The differential equation for psi in imaginary time"""
-                K_psi, H_local_lin, H_local_nonlin = H(t, psi)
-                return -1 / self.hbar * (K_psi + (H_local_lin + H_local_nonlin - mu) * psi)
+                def dpsi_dt(t, psi):
+                    """The differential equation for psi, as well as the angular
+                    frequencies corresponding to the spatial part of the
+                    Hamiltonian for use with the RK4ILIP method"""
+                    K, H_local_lin, H_local_nonlin = H(t, psi)
+                    K_psi = self.simulator.par_operator(K, psi)
+                    omega = (H_local_lin + H_local_nonlin - mu)/self.hbar
+                    d_psi_dt = -1j / self.hbar * K_psi -1j*omega * psi
+                    return d_psi_dt, omega
 
         elif method == 'rk4':
+            if imaginary_time:
 
-            def dpsi_dt(t, psi):
-                """The differential equation for psi"""
-                K_psi, H_local_lin, H_local_nonlin = H(t, psi)
-                d_psi_dt = -1j / self.hbar * (K_psi + (H_local_lin + H_local_nonlin - mu) * psi)
-                return d_psi_dt
+                def dpsi_dt(t, psi):
+                    """The differential equation for psi in imaginary time"""
+                    K, H_local_lin, H_local_nonlin = H(t, psi)
+                    K_psi = self.simulator.par_operator(K, psi)
+                    return -1 / self.hbar * (K_psi + (H_local_lin + H_local_nonlin - mu) * psi)
+
+            else:
+
+                def dpsi_dt(t, psi):
+                    """The differential equation for psi"""
+                    K, H_local_lin, H_local_nonlin = H(t, psi)
+                    K_psi = self.simulator.par_operator(K, psi)
+                    d_psi_dt = -1j / self.hbar * (K_psi + (H_local_lin + H_local_nonlin - mu) * psi)
+                    return d_psi_dt
+
+        elif method == 'split step':
+            if imaginary_time:
+
+                def split_step_operators(t, psi):
+                    K, H_local_lin, H_local_nonlin = H(t, psi)
+                    fourier_operators = -1/self.hbar * K
+                    local_operators = -1/self.hbar * (H_local_lin + H_local_nonlin)
+                    return fourier_operators, local_operators
+
+            else:
+
+                def split_step_operators(t, psi):
+                    K, H_local_lin, H_local_nonlin = H(t, psi)
+                    fourier_operators = -1j/self.hbar * K
+                    local_operators = -1j/self.hbar * (H_local_lin + H_local_nonlin)
+                    return fourier_operators, local_operators
 
         else:
-            raise ValueError(method)
+            msg = "method must be one of 'rk4', 'rk4ilip', or 'split step'"
+            raise ValueError(msg)
 
         def output_callback(i, t, psi, infodict):
             energy_err = self.compute_energy(t, psi, H) / E_initial - 1
@@ -206,6 +233,10 @@ class BEC2D(object):
                                post_step_callback=post_step_callback, error_check_interval=error_check_interval)
         elif method == 'rk4ilip':
             self.simulator.rk4ilip(dt, t_final, dpsi_dt, psi, omega_imag_provided, output_interval=output_interval,
+                    output_callback=output_callback, post_step_callback=post_step_callback,
+                    error_check_interval=error_check_interval)
+        elif method == 'split step':
+            self.simulator.split_step(dt, t_final, split_step_operators, psi, output_interval=output_interval,
                     output_callback=output_callback, post_step_callback=post_step_callback,
                     error_check_interval=error_check_interval)
 

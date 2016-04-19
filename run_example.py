@@ -36,7 +36,8 @@ N_2D, omega = get_number_and_trap(rhomax, R)  # 2D normalisation constant and tr
 nx_global = ny_global = 256
 x_max_global = y_max_global = 10e-6
 
-simulator = Simulator2D(-x_max_global, x_max_global, -y_max_global, y_max_global, nx_global, ny_global, operator_order=6)
+simulator = Simulator2D(-x_max_global, x_max_global, -y_max_global, y_max_global, nx_global, ny_global,
+                        periodic_x=True, periodic_y=True, operator_order=6)
 bec2d = BEC2D(simulator, natural_units=False)
 
 x = simulator.x
@@ -58,16 +59,16 @@ K = -hbar**2/(2*m)*LAPLACIAN
 
 def H(t, psi):
     """The Hamiltonian for single-component wavefunction psi. Returns the
-    kinetic term acting on psi and the local terms (not acting on psi)
-    separately."""
-    # Initialise parallel operator evaluation as early as possible, to allow
-    # for largest network latency:
-    K_psi = simulator.par_operator_init(K, psi)
+    kinetic term as an OperatorSum instance, and the local terms separately."""
     H_local_lin = V
     H_local_nonlin = g * abs(psi)**2
-    # Finalise parallel operator evaluation as late as possible:
-    K_psi = simulator.par_operator_finalise(K, psi, K_psi)
-    return K_psi, H_local_lin, H_local_nonlin
+    return K, H_local_lin, H_local_nonlin
+
+def split_step_operators(t, psi):
+    """Returns the operators for solving with the split step method. This is
+    simply -1j/hbar times the kinetic and local terms of the Hamiltonian."""
+    H_local = V + g * abs(psi)**2
+    return -1j/hbar * K, -1j/hbar * H_local
 
 
 def groundstate_system(psi):
@@ -111,5 +112,5 @@ if __name__ == '__main__':
 
     # And evolve it in time for 10ms:
     psi = bec2d.evolve(dt=dispersion_timescale/2, t_final=10e-3,
-                       H=H, psi=psi, mu=mu, method='rk4', imaginary_time=False,
+                       H=H, psi=psi, mu=mu, method='split step', imaginary_time=False,
                        output_interval=100, output_directory='evolution')

@@ -343,7 +343,9 @@ class Simulator2D(object):
         out = self.par_operator_init(psi, operator, out)
         return self.par_operator_finalise(psi, operator, out)
 
-    def fft_operator(self, operator, psi):
+    def make_fourier_operator(self, operator):
+        """If the operator is diagonal in the Fourier basis, return its
+        fourier representation as an array."""
         gradx_coeff = operator.get(Operators.GRADX, None)
         grady_coeff = operator.get(Operators.GRADY, None)
         grad2x_coeff = operator.get(Operators.GRAD2X, None)
@@ -354,7 +356,8 @@ class Simulator2D(object):
             raise ValueError(msg)
 
         if any(op.shape != (1, 1) for op in operator.values()):
-            msg = "FFTs cannot be used to evaluate operators with spatially varying coefficients"
+            msg = ("FFTs cannot be used to evaluate operators with spatially varying coefficients, " +
+                   "as they are not diagonal in the Fourier basis.")
             raise ValueError(msg)
 
         # Compute the operator in Fourier space:
@@ -367,8 +370,18 @@ class Simulator2D(object):
             f_operator = f_operator + grad2x_coeff * self.f_grad2x
         if grad2y_coeff is not None:
             f_operator = f_operator + grad2y_coeff * self.f_grad2y
+        return f_operator
 
-        result = ifft2(f_operator*fft2(psi))
+    def apply_fourier_operator(self, operator, psi):
+        """Applies an operator in the Fourier basis. If operator provided is
+        an OperatorSum, it is converted to the Fourier basis. If operator is
+        an array, it is assumed to already be the representation of the
+        operator in the Fourier basis."""
+        if isinstance(operator, OperatorSum):
+            operator = self.make_fourier_operator(operator)
+        elif not isinstance(operator, np.ndarray):
+            raise TypeError(operator)
+        result = ifft2(operator*fft2(psi))
         if psi.dtype == np.float64 and all(op.dtype == np.float64 for op in operator.values()):
             result = result.real
         return result
@@ -460,7 +473,8 @@ class Simulator2D(object):
 
             time_per_step = (time.time() - start_time)/i if i else np.nan
             infodict = {'time per step': time_per_step, 'step error': step_error}
-            _pre_step_checks(i, t, psi, output_interval, output_callback, post_step_callback, infodict)
+            if not error_check_backward_step:
+                _pre_step_checks(i, t, psi, output_interval, output_callback, post_step_callback, infodict)
             k1 = dpsi_dt(t, psi)
             k2 = dpsi_dt(t + 0.5*dt, psi + 0.5*k1*dt)
             k3 = dpsi_dt(t + 0.5*dt, psi + 0.5*k2*dt)
@@ -520,7 +534,8 @@ class Simulator2D(object):
 
             time_per_step = (time.time() - start_time)/i if i else np.nan
             infodict = {'time per step': time_per_step, 'step error': step_error}
-            _pre_step_checks(i, t, psi, output_interval, output_callback, post_step_callback, infodict)
+            if not error_check_backward_step:
+                _pre_step_checks(i, t, psi, output_interval, output_callback, post_step_callback, infodict)
             if omega_imag_provided:
                 # Omega is purely imaginary, and so omega_imag has been provided
                 # instead so real arithmetic can be used:
@@ -563,6 +578,69 @@ class Simulator2D(object):
             psi[:] = U_dagger_full*phi_4
             t += dt
             i += 1
+        time_per_step = (time.time() - start_time)/i if i else np.nan
+        infodict = {'time per step': time_per_step, 'step error': step_error}
+        _pre_step_checks(i, t, psi, output_interval, output_callback, post_step_callback, infodict, final_call=True)
+
+
+    def split_step(self, dt, t_final, operators, psi,
+            output_interval=100, output_callback=None, post_step_callback=None, error_check_interval=None):
+        """Split step method. 'operators' should return separately the nonlocal and
+        local operators for time evolution."""
+
+        t = 0
+        i = 0
+        step_error = 0
+        error_check_forward_step=False
+        error_check_backward_step=False
+        start_time = time.time()
+        while not t > t_final:
+
+            if error_check_interval is not None:
+                if not i % error_check_interval and not (error_check_forward_step or error_check_backward_step):
+                    # Save the wavefunction before doing a normal step
+                    error_check_forward_step = True
+                    psi_pre_errorcheck = psi.copy()
+                elif error_check_forward_step:
+                    error_check_forward_step = False
+                    error_check_backward_step = True
+                    # Continue from here after our backwards step:
+                    psi_post_errorcheck= psi.copy()
+                    # Do a backwards step:
+                    dt = -dt
+                elif error_check_backward_step:
+                    error_check_forward_step = False
+                    error_check_backward_step = False
+                    local_sum_squared_error = (np.abs(psi - psi_pre_errorcheck)**2).sum()
+                    local_sum_squared_error = np.asarray(local_sum_squared_error).reshape(1)
+                    total_sum_squared_error = np.zeros(1)
+                    self.MPI_comm.Allreduce(local_sum_squared_error, total_sum_squared_error, MPI.SUM)
+                    psi_norm = self.par_vdot(psi_pre_errorcheck, psi_pre_errorcheck).real
+                    step_error = np.sqrt(0.5*total_sum_squared_error/psi_norm)
+                    # Restore psi, i t, and dt:
+                    psi[:] = psi_post_errorcheck
+                    i -= 1
+                    dt = -dt
+                    t += dt
+
+            time_per_step = (time.time() - start_time)/i if i else np.nan
+            infodict = {'time per step': time_per_step, 'step error': step_error}
+            if not error_check_backward_step:
+                _pre_step_checks(i, t, psi, output_interval, output_callback, post_step_callback, infodict)
+
+            nonlocal_operator, local_operator = operators(t, psi)
+            local_unitary = np.exp(dt*local_operator)
+
+            fourier_operator = self.make_fourier_operator(nonlocal_operator)
+            fourier_unitary = np.exp(dt*fourier_operator)
+
+            # Real space step:
+            psi[:] *= local_unitary
+            # Fourier space step:
+            psi[:] = self.apply_fourier_operator(fourier_unitary, psi)
+            t += dt
+            i += 1
+
         time_per_step = (time.time() - start_time)/i if i else np.nan
         infodict = {'time per step': time_per_step, 'step error': step_error}
         _pre_step_checks(i, t, psi, output_interval, output_callback, post_step_callback, infodict, final_call=True)
