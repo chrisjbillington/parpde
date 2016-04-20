@@ -727,13 +727,13 @@ class HDFOutput(object):
             self.file.flush()
 
     @staticmethod
-    def iterframes(directory, start_frame=0, n_frames=None, step=1):
+    def iterframes(directory, start=0, end=None, step=1, frames=None):
         with h5py.File(os.path.join(directory, '0.h5')) as master_file:
             MPI_size = master_file['MPI_geometry'].attrs['MPI_size']
             shape = master_file.attrs['global_shape']
             dtype = master_file['psi'].dtype
-            if n_frames is None:
-                n_frames = len(master_file['psi'])
+            if end is None:
+                end = len(master_file['psi'])
         files = []
         for rank in range(MPI_size):
             basename = str(rank).zfill(len(str(MPI_size))) + '.h5'
@@ -745,7 +745,7 @@ class HDFOutput(object):
             ny = f['MPI_geometry']['ny'][0]
             files.append((f, psi_dataset, start_x, start_y, nx, ny))
 
-        for i in range(start_frame, n_frames, step):
+        for i in frames if frames is not None else range(start, end, step):
             psi = np.zeros(shape, dtype=dtype)
             for f, psi_dataset, start_x, start_y, nx, ny in files:
                 psi[start_x:start_x + nx, start_y:start_y + ny] = psi_dataset[i]

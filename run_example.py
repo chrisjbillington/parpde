@@ -37,7 +37,7 @@ nx_global = ny_global = 256
 x_max_global = y_max_global = 10e-6
 
 simulator = Simulator2D(-x_max_global, x_max_global, -y_max_global, y_max_global, nx_global, ny_global,
-                        periodic_x=True, periodic_y=True, operator_order=6)
+                        periodic_x=False, periodic_y=False, operator_order=6)
 bec2d = BEC2D(simulator, natural_units=False, use_ffts=False)
 
 x = simulator.x
@@ -48,8 +48,8 @@ dy = simulator.dy
 r2 = x**2.0 + y**2.0
 r  = np.sqrt(r2)
 
-alpha = 2
-V = 0.5 * m * omega**2 * R**2.0 * (r/R)**alpha
+# A Harmonic trap:
+V = 0.5 * m * omega**2 * R**2.0 * (r/R)**2
 
 dispersion_timescale = dx**2 * m / (pi * hbar)
 chemical_potential_timescale = 2*pi*hbar/mu
@@ -64,24 +64,6 @@ def H(t, psi):
     H_local_nonlin = g * abs(psi)**2
     return K, H_local_lin, H_local_nonlin
 
-def split_step_operators(t, psi):
-    """Returns the operators for solving with the split step method. This is
-    simply -1j/hbar times the kinetic and local terms of the Hamiltonian."""
-    H_local = V + g * abs(psi)**2
-    return -1j/hbar * K, -1j/hbar * H_local
-
-
-def groundstate_system(psi):
-    """The system of equations Ax = b to be solved with sucessive
-    overrelaxation to find the groundstate. For us this is H*psi = mu*psi.
-    Here we compute b, the diagonal part of A, and the coefficients for
-    representing the nondiagonal part of A as a sum of operators to be
-    evaluated by the solver."""
-    A_diag = V + g*abs(psi)**2
-    A_nondiag = -hbar**2/(2*m)*LAPLACIAN
-    b = mu*psi
-    return A_diag, A_nondiag, b
-
 
 if __name__ == '__main__':
     # The initial Thomas-Fermi guess:
@@ -90,7 +72,7 @@ if __name__ == '__main__':
     psi = np.sqrt(psi)
 
     # Find the groundstate:
-    psi = bec2d.find_groundstate(groundstate_system, H, mu, psi, relaxation_parameter=1.5, convergence=1e-13,
+    psi = bec2d.find_groundstate(H, mu, psi, relaxation_parameter=1.7, convergence=1e-13,
                                  output_interval=100, output_directory='groundstate', convergence_check_interval=10)
 
     # psi is real so far, convert it to complex:

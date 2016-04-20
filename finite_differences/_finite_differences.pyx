@@ -672,6 +672,6 @@ def apply_operator(
         if i == -1:
             break
 
-    return np.array(out)
+    return np.asarray(out)
 
 

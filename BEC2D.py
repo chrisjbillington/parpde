@@ -48,30 +48,30 @@ class BEC2D(object):
 
     def normalise(self, psi, N_2D):
         """Normalise psi to the 2D normalisation constant N_2D, which has
-        units of a linear density. Modifies psi in-place and returns None."""
+        units of a linear density. Modifies psi in-place and returns pre-
+        update normalisation."""
         # imposing normalisation on the wavefunction:
         ncalc = self.compute_number(psi)
         psi[:] *= np.sqrt(N_2D/ncalc)
+        return ncalc
 
-    def find_groundstate(self, system, H, mu, psi, relaxation_parameter=1.7, convergence=1e-13,
+    def find_groundstate(self, H, mu, psi, relaxation_parameter=1.7, convergence=1e-13,
                          output_interval=100, output_directory=None, convergence_check_interval=10):
         """Find the groundstate of a condensate with sucessive overrelaxation.
-        A function for the system of equations being solved is required, as is
-        the Hamiltonian (used only for computing the chemical potential to
-        print statistics), and an initial guess. If the initial guess for psi
-        is real, then real arithmetic will be used throughout the computation.
-        Otherwise it should be complex. The relaxation parameter must be
-        between 0 and 2, and generally somewhere between 1.5 and 2 gives
-        fastest convergence The more points per MPI task, the higher the
-        relaxation parameter can be. The calculation will stop when the
-        chemical potential is correct to within the given convergence. To save
-        time, this will only be computed every convergence_check_interval
+        Requires the Hamiltonian, an initial guess of the wavefunction, and
+        the desired chemical potential. The groundstate of the given chemical
+        potential will be found, regardless of atom number.  If the initial
+        guess for psi is real, then real arithmetic will be used throughout
+        the computation. Otherwise it should be complex. The relaxation
+        parameter must be between 0 and 2, and generally somewhere between 1.5
+        and 2 gives fastest convergence The more points per MPI task, the
+        higher the relaxation parameter can be. The calculation will stop when
+        the chemical potential is correct to within the given convergence. To
+        save time, this will only be computed every convergence_check_interval
         steps. If output_directory is None, the output callback will still be
         called every output_interval steps, but it will just print statistics
         and not output anything to file. output_interval can also be a list of
         integers for which steps output should be saved."""
-
-        """Find the groundstate of a condensate using sucessive overrelaxation"""
 
         if not self.simulator.MPI_rank: # Only rank 0 should print
             print('\n==========')
@@ -79,6 +79,18 @@ class BEC2D(object):
             print("Target chemical potential is: " + repr(mu))
             print("Convergence criterion is: {}".format(convergence))
             print('==========')
+
+        def groundstate_system(psi):
+            """The system of equations Ax = b to be solved with sucessive
+            overrelaxation to find the groundstate. For us this is H*psi = mu*psi.
+            Here we compute b, the diagonal part of A, and the coefficients for
+            representing the nondiagonal part of A as a sum of operators to be
+            evaluated by the solver."""
+            K, H_local_lin, H_local_nonlin = H(0, psi)
+            A_diag = H_local_lin + H_local_nonlin
+            A_nondiag = K
+            b = mu*psi
+            return A_diag, A_nondiag, b
 
         def output_callback(i, t, psi, infodict):
             time_per_step = infodict['time per step']
@@ -99,9 +111,9 @@ class BEC2D(object):
         if output_directory is not None:
             hdf_output = HDFOutput(self.simulator, output_directory)
 
-        self.simulator.successive_overrelaxation(system, psi, relaxation_parameter, convergence,
-                                  output_interval, output_callback, post_step_callback=None,
-                                  convergence_check_interval=convergence_check_interval)
+        self.simulator.successive_overrelaxation(groundstate_system, psi, relaxation_parameter, convergence,
+                                                 output_interval, output_callback, post_step_callback=None,
+                                                 convergence_check_interval=convergence_check_interval)
         if not self.simulator.MPI_rank: # Only rank 0 should print
             print('Convergence reached')
         return psi
