@@ -37,10 +37,10 @@ cdef extern from "complex.h":
 
 
 # Constants for central finite differences:
-DEF D_2ND_ORDER_1 = 1.0/5.0
+DEF D_2ND_ORDER_1 = 1.0/2.0
 
 DEF D_4TH_ORDER_1 = 2.0/3.0
-DEF D_4TH_ORDER_2 = 1.0/12.0
+DEF D_4TH_ORDER_2 = -1.0/12.0
 
 DEF D_6TH_ORDER_1 = 3.0/4.0
 DEF D_6TH_ORDER_2 = -3.0/20.0
