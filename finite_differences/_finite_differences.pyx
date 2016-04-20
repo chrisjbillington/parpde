@@ -105,12 +105,11 @@ cdef inline void iter_interior(int * i, int * j, int nx, int ny, int npts) nogil
     at least npts_edges points the edge of the array. Caller should use i = j
     = npts for the first point before calling this function to get the second
     point. Sets i = j = -1 when done."""
-    if i[0] < nx - npts - 1:
-        if j[0] < ny - npts - 1:
-            j[0] += 1
-        else:
-            i[0] += 1
-            j[0] = npts
+    if j[0] < ny - npts - 1:
+        j[0] += 1
+    elif i[0] < nx - npts - 1:
+        i[0] += 1
+        j[0] = npts
     else:
         i[0] = -1
         j[0] = -1
@@ -125,12 +124,11 @@ cdef inline void iter_all(int * i, int * j, int nx, int ny, int npts) nogil:
     """Increment i and j so as to iterate over all points in the array. Caller
     should use i = j = 0 for the first point before calling this function to
     get the second point. Sets i = j = -1 when done."""
-    if i[0] < nx - 1:
-        if j[0] < ny - 1:
-            j[0] += 1
-        else:
-            i[0] += 1
-            j[0] = 0
+    if j[0] < ny - 1:
+        j[0] += 1
+    elif i[0] < nx - 1:
+        i[0] += 1
+        j[0] = 0
     else:
         i[0] = -1
         j[0] = -1

@@ -28,7 +28,7 @@ def plot_sim(name):
     output_dir = name + '_images'
     if not os.path.isdir(output_dir):
         os.mkdir(output_dir)
-    for i, psi in enumerate(HDFOutput.iterframes(name)):
+    for i, psi in HDFOutput.iterframes(name, step=1):
         print(name, i)
         plot(output_dir, i, psi)
 
