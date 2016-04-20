@@ -57,6 +57,10 @@ class OperatorSum(dict):
     """Class for representing a weighted sum of operators. Supports
     arithemetic operations, and coefficients can be numpy arrays for spatially
     varying coefficients."""
+    # Tells numpy arrays to not try to use their arithmetic operations
+    # elementwise on us, instead they should defer to this class's arithmetic
+    # methods:
+    __array_priority__ = 1.0
     def __add__(self, other):
         new = OperatorSum(self)
         for obj, coefficient in other.items():
@@ -85,6 +89,7 @@ class OperatorSum(dict):
     __rsub__ = __sub__
     __rmul__ = __mul__
     __rdiv__ = __div__
+
 
 # Objects representing operators, which can be added, subtracted etc from each
 # other and multiplied by constants:
