@@ -2,6 +2,8 @@
 #     python plot.py
 
 from __future__ import division, print_function
+import sys
+sys.path.insert(0, '../..') # The location of the modules we need to import
 import os
 import numpy as np
 import matplotlib
@@ -34,5 +36,3 @@ def plot_sim(name):
 
 if __name__ == '__main__':
     plot_sim('groundstate')
-    plot_sim('smoothing')
-    plot_sim('evolution')
