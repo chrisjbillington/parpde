@@ -179,7 +179,7 @@ class BEC2D(object):
                     d_psi_dt = -1j / self.hbar * (K_psi + (H_local_lin + H_local_nonlin - mu) * psi)
                     return d_psi_dt
 
-        elif method == 'rk4ip' or method == 'split step':
+        elif method == 'rk4ip' or method == 'split-step':
             if imaginary_time:
                 K, _, _ = H(0, psi)
                 nonlocal_operator = -1/self.hbar * K
@@ -225,7 +225,7 @@ class BEC2D(object):
                     return d_psi_dt, omega
 
         else:
-            msg = "method must be one of 'rk4', 'rk4ilip', 'rk4ip', or 'split step'"
+            msg = "method must be one of 'rk4', 'rk4ilip', 'rk4ip', or 'split-step'"
             raise ValueError(msg)
 
         def output_callback(i, t, psi, infodict):
@@ -277,7 +277,7 @@ class BEC2D(object):
             self.simulator.rk4ilip(dt, t_final, dpsi_dt, psi, omega_imag_provided, output_interval=output_interval,
                                    output_callback=output_callback, post_step_callback=post_step_callback,
                                    estimate_error=estimate_error)
-        elif method == 'split step':
+        elif method == 'split-step':
             self.simulator.split_step(dt, t_final, nonlocal_operator, local_operator, psi,
                                       output_interval=output_interval, output_callback=output_callback,
                                       post_step_callback=post_step_callback,

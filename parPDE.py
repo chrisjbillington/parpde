@@ -1,4 +1,5 @@
 from __future__ import division, print_function
+import sys
 import os
 import time
 import enum
@@ -379,6 +380,12 @@ class Simulator2D(object):
 
     def _pre_step_checks(self, i, t, psi, output_interval, output_callback, post_step_callback, infodict, final_call=False):
         if np.isnan(psi).any() or np.isinf(psi).any():
+            sys.stdout.write('It exploded :(\n')
+            # Call output funcs so user can see exactly when things went pear shaped:
+            if post_step_callback is not None:
+                post_step_callback(i, t, psi, infodict)
+            if output_callback is not None and output_interval is not None:
+                output_callback(i, t, psi, infodict)
             raise RuntimeError('It exploded :(')
         if post_step_callback is not None:
             post_step_callback(i, t, psi, infodict)
