@@ -29,6 +29,20 @@ class BEC2D(object):
         mucalc = self.simulator.par_vdot(psi, H_psi) * self.dx * self.dy / ncalc
         return mucalc.real
 
+    def compute_mu_convergence(self, t, psi, H, mu_target):
+        """Computes the RMS discrepancy from the target chemical potential"""
+
+        K, H_local_lin, H_local_nonlin = H(t, psi)
+        K_psi = self.simulator.par_operator(K, psi, use_ffts=self.use_ffts)
+        H_psi = K_psi + (H_local_lin + H_local_nonlin)*psi
+
+        residuals = H_psi - mu_target*psi
+        sum_squared_residuals = self.simulator.par_vdot(residuals, residuals).real
+        denominator = mu_target*psi
+        sum_squared_denominator =  self.simulator.par_vdot(denominator, denominator).real
+        convergence = np.sqrt(sum_squared_residuals/sum_squared_denominator)
+        return convergence
+
     def compute_energy(self, t, psi, H):
         """Computes approximate chemical potential (for use as a global energy
         offset, for example) corresponding a given Hamiltonian, where H is a
@@ -220,17 +234,26 @@ class BEC2D(object):
             time_per_step = infodict['time per step']
             step_err = infodict['step error']
 
-            output_log_dtype = [('step', int), ('time', float),
-                                ('dN/N', float), ('dE/E', float),
-                                ('step err', float), ('time per step', float)]
-            output_log_data = np.array((i, t, number_err, energy_err, step_err, time_per_step), dtype=output_log_dtype)
+            if imaginary_time:
+                convergence = self.compute_mu_convergence(t, psi, H, mu)
+                output_log_dtype = [('step', int), ('time', float),
+                                    ('dN/N', float), ('convergence', float),
+                                    ('step err', float), ('time per step', float)]
+
+                output_log_data = np.array((i, t, number_err, convergence, step_err, time_per_step), dtype=output_log_dtype)
+            else:
+                output_log_dtype = [('step', int), ('time', float),
+                                    ('dN/N', float), ('dE/E', float),
+                                    ('step err', float), ('time per step', float)]
+
+                output_log_data = np.array((i, t, number_err, energy_err, step_err, time_per_step), dtype=output_log_dtype)
             if output_directory is not None:
                 hdf_output.save(psi, output_log_data)
 
             message = ('step: %d' % i +
                       ' | t = {}'.format(format_float(t, units=self.time_units)) +
                       ' | dN/N: %+.02E' % number_err +
-                      ' | dE/E: %+.02E' % energy_err +
+                     ((' | convergence: %E' % convergence)  if imaginary_time else (' | dE/E: %+.02E' % energy_err)) +
                       ' | step err: %.03E' % step_err +
                       ' | time per step: {}'.format(format_float(time_per_step, units='s')))
             if not self.simulator.MPI_rank: # Only rank 0 should print

@@ -1,5 +1,5 @@
 # An example of a turbulent BEC in a harmonic trap. The groundstate is found
-# and then some vortices randomly printed about with a phase printing. Some
+# and then some vortices randomly printed about with a phase printing. Some
 # evolution in imaginary time is then performed to smooth things out before
 # evolving the BEC in time.
 
