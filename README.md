@@ -21,5 +21,7 @@ the condensate and evolving it in time.
 Try running the example with "mpirun -n <number of cores> python
 run_example.py" and then plotting it with "python plot_example.py".
 
+Works on Python 2 and 3 (tested on 2.7 and 3.4).
 Requires python, numpy, scipy, h5py, cython, mpi4py an MPI implementation and
-matplotlib (for the plot example)
+matplotlib (for the plot example). If using Python < 3.4, also requires the
+backported 'enum34' module.
