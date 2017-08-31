@@ -70,7 +70,8 @@ class BEC2D(object):
         return ncalc
 
     def find_groundstate(self, H, mu, psi, relaxation_parameter=1.7, convergence=1e-13,
-                         output_interval=100, output_directory=None, convergence_check_interval=10):
+                         output_interval=100, output_directory=None, convergence_check_interval=10,
+                         boundary_mask=None):
         """Find the groundstate of a condensate with sucessive overrelaxation.
         Requires the Hamiltonian, an initial guess of the wavefunction, and
         the desired chemical potential. The groundstate of the given chemical
@@ -125,8 +126,8 @@ class BEC2D(object):
         if output_directory is not None:
             hdf_output = HDFOutput(self.simulator, output_directory)
 
-        self.simulator.successive_overrelaxation(groundstate_system, psi, relaxation_parameter, convergence,
-                                                 output_interval, output_callback, post_step_callback=None,
+        self.simulator.successive_overrelaxation(groundstate_system, psi, boundary_mask, relaxation_parameter,
+                                                 convergence, output_interval, output_callback, post_step_callback=None,
                                                  convergence_check_interval=convergence_check_interval)
         if not self.simulator.MPI_rank: # Only rank 0 should print
             print('Convergence reached')
@@ -240,13 +241,15 @@ class BEC2D(object):
                                     ('dN/N', float), ('convergence', float),
                                     ('step err', float), ('time per step', float)]
 
-                output_log_data = np.array((i, t, number_err, convergence, step_err, time_per_step), dtype=output_log_dtype)
+                output_log_data = np.array((i, t, number_err, convergence, step_err, time_per_step),
+                                           dtype=output_log_dtype)
             else:
                 output_log_dtype = [('step', int), ('time', float),
                                     ('dN/N', float), ('dE/E', float),
                                     ('step err', float), ('time per step', float)]
 
-                output_log_data = np.array((i, t, number_err, energy_err, step_err, time_per_step), dtype=output_log_dtype)
+                output_log_data = np.array((i, t, number_err, energy_err, step_err, time_per_step),
+                                           dtype=output_log_dtype)
             if output_directory is not None:
                 hdf_output.save(psi, output_log_data)
 

@@ -35,13 +35,15 @@ def plot_sim(name):
         up_to = max(int(name.strip('.png')) for name in listdir)
     else:
         up_to=0
-    for i, psi in HDFOutput.iterframes(name, start=up_to, step=1):
+    for i, psi in HDFOutput.iterframes(name, start=up_to, step=5):
+        import IPython
+        IPython.embed()
         print(name, i)
         plot(output_dir, i, psi)
 
 if __name__ == '__main__':
     while True:
-        plot_sim('groundstate_8')
+        plot_sim('groundstate')
         import time
-        time.sleep(30)
+        time.sleep(10)
     # plot_sim('smoothing')

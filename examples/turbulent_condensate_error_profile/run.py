@@ -77,7 +77,7 @@ if __name__ == '__main__':
     # The initial Thomas-Fermi guess:
     psi = rhomax * (1 - (x**2 + y**2) / R**2)
     psi[psi < 0] = 0
-    psi = np.sqrt(psi)
+    psi = np.array(np.sqrt(psi), dtype=complex)
 
     # Find the groundstate:
     psi = bec2d.find_groundstate(H, mu, psi, relaxation_parameter=1.7, convergence=1e-13,

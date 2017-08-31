@@ -32,23 +32,29 @@ m  = 86.909180*u                              # 87Rb atomic mass
 a  = 98.98*a_0                                # 87Rb |2,2> scattering length
 g  = 4*pi*hbar**2*a/m                         # 87Rb self interaction constant
 
-rhomax = 2.5e14 * 1e6                         # Desired peak condensate density
-R = 9e-6                                      # Desired condensate radius
-mu = g* rhomax                                # Approximate chemical potential for desired max density
-                                              # (assuming all population is in in mF=+1 or mF=-1)
-N_2D, omega = get_number_and_trap(rhomax, R)  # 2D normalisation constant and trap frequency
-                                              # required for specified radius and peak density
+R = 7.5e-6                                    # Desired condensate radius
+N = 50                                       # desired number of vortices
+Omega = N*hbar/(m*R**2)                       # Rotation speed required for this number of vortices
 
-# Rotation rate:
-Omega = 2*omega
+fractional_rotation_speed = 0.9999
+omega = 1/fractional_rotation_speed * Omega             # Trap frequency
+omega_eff = np.sqrt(omega**2 - Omega**2)                # effective trap frequenct inc. centrifugal force
+mu = 0.5 * m * omega_eff**2 * R**2.0 + hbar*Omega       # Chemical potential required for Thomas-Fermi radius to equal R
+rhomax = (mu - hbar*Omega) /g                           # Peak condensate density in TF approx
+healing_length = 2*pi*hbar/np.sqrt(2*m*g*rhomax)
+
 
 # Space:
-nx_global = ny_global = 256
-x_max_global = y_max_global = 10e-6
+nx_global = ny_global = 768
+x_max_global = y_max_global = 30e-6
 
 simulator = Simulator2D(-x_max_global, x_max_global, -y_max_global, y_max_global, nx_global, ny_global,
                         periodic_x=False, periodic_y=False, operator_order=6)
 bec2d = BEC2D(simulator, natural_units=False, use_ffts=False)
+
+print(2*x_max_global/healing_length)
+
+
 
 x = simulator.x
 y = simulator.y
@@ -58,19 +64,15 @@ dy = simulator.dy
 r2 = x**2.0 + y**2.0
 r  = np.sqrt(r2)
 
-# A harmonic trap to exactly cancel out the centrifugal force:
+assert False
+
+# The harmonic trap
 alpha = 2
-V = 0.5 * m * Omega**2 * R**2.0 * (r/R)**alpha
-
-# A high order polynomial trap as a hard wall potential:
-alpha = 4
-V += 0.5 * m * omega**2 * R**2.0 * (r/R)**alpha
-
-import IPython
-IPython.embed()
+V = 0.5 * m * omega**2 * r**2
 
 # The kinetic and rotation terms of the Hamiltonian:
 K = -hbar**2/(2*m)*LAPLACIAN - 1j*hbar*Omega*(y * GRADX - x * GRADY)
+
 
 def H(t, psi):
     """The Hamiltonian for single-component wavefunction psi. Returns the
@@ -82,24 +84,20 @@ def H(t, psi):
 
 if __name__ == '__main__':
     # The initial Thomas-Fermi guess:
-    # psi = rhomax * (1 - (x**2 + y**2) / R**2)
-    # psi[psi < 0] = 0
-    # psi = np.sqrt(psi)
+    psi = rhomax * (1 - (x**2 + y**2) / R**2)
+    psi[psi < 0] = 0
+    psi = np.sqrt(psi)
 
-    # psi = np.array(psi, dtype=complex)
+    psi = np.array(psi, dtype=complex)
 
-    import h5py
-    with h5py.File('initial_16.h5', 'r') as f:
-        psi = f['psi'][:]
-
-    # # Some random vortices to give the relaxation something to start with:
-    # np.random.seed(42) # must be seeded so that all MPI processes agree
-    # for i in range(100):
-    #     x_vortex = np.random.normal(0, scale=R)
-    #     y_vortex = np.random.normal(0, scale=R)
-    #     psi[:] *= np.exp(1j*np.arctan2(x - y_vortex, y - x_vortex))
+    # Some random vortices to give the relaxation something to start with:
+    np.random.seed(42) # must be seeded so that all MPI processes agree
+    for i in range(100):
+        x_vortex = np.random.normal(0, scale=R)
+        y_vortex = np.random.normal(0, scale=R)
+        psi[:] *= np.exp(1j*np.arctan2(x - y_vortex, y - x_vortex))
 
     # Find the groundstate:
-    psi = bec2d.find_groundstate(H, mu, psi, relaxation_parameter=1.9, convergence=1e-6,
-                                 output_interval=1000, output_directory='groundstate_4', convergence_check_interval=10)
+    psi = bec2d.find_groundstate(H, mu, psi, boundary_mask=None, relaxation_parameter=1.9, convergence=1e-9,
+                                 output_interval=500, output_directory='groundstate', convergence_check_interval=10)
 

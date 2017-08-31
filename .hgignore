@@ -1,0 +1,7 @@
+syntax: glob
+*.pyc
+*.png
+*.h5
+terminal output/*
+*.html
+*.so

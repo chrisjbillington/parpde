@@ -401,12 +401,22 @@ class Simulator2D(object):
             if final_call and not output_callback_called:
                 output_callback(i, t, psi, infodict)
 
-    def successive_overrelaxation(self, system, psi, relaxation_parameter=1.7, convergence=1e-13,
+    def successive_overrelaxation(self, system, psi, boundary_mask=None, relaxation_parameter=1.7, convergence=1e-13,
                                    output_interval=100, output_callback=None, post_step_callback=None,
                                    convergence_check_interval=10):
+        """Solve a system of equations A*psi=b using sucessive oberrelaxation.
+        The provided function for the system of equations should accept psi
+        and return the diagonal part of A as an array, the non-diagonal part
+        of A as an OperatorSum instance, and b as an array. This function
+        requires an initial guess for psi, and optionally takes a boolean
+        array boundary_mask, which specifies which region is in-bounds for the
+        problem. Any points not selected by the mask will not be evolved, and
+        as such the initial-guess value of psi there serves as boundary conditions."""
         i = 0
         start_time = time.time()
         convergence_calc = np.nan
+        if boundary_mask is not None:
+            boundary_mask = np.array(boundary_mask, dtype=np.uint8)
         while True:
             time_per_step = (time.time() - start_time)/i if i else np.nan
             infodict = {"convergence": convergence_calc, 'time per step': time_per_step}
@@ -427,7 +437,7 @@ class Simulator2D(object):
 
             squared_error = SOR_step(psi, A_diag, gradx_coeff, grady_coeff, grad2x_coeff, grad2y_coeff, b,
                                      self.dx, self.dy, relaxation_parameter, self.operator_order,
-                                     interior=True, edges=False)
+                                     interior=True, edges=False, boundary_mask=boundary_mask)
 
             self.MPI_receive_at_edges()
             left_buffer, right_buffer, bottom_buffer, top_buffer = self.MPI_receive_buffers[psi.dtype.type]
@@ -435,7 +445,8 @@ class Simulator2D(object):
             squared_error = SOR_step(psi, A_diag, gradx_coeff, grady_coeff, grad2x_coeff, grad2y_coeff, b,
                                      self.dx, self.dy, relaxation_parameter, self.operator_order,
                                      left_buffer, right_buffer, bottom_buffer, top_buffer,
-                                     squared_error=squared_error, interior=False, edges=True)
+                                     squared_error=squared_error, interior=False, edges=True,
+                                     boundary_mask=boundary_mask)
             if compute_error:
                 squared_error = np.asarray(squared_error).reshape(1)
                 total_squared_error = np.zeros(1)
@@ -744,7 +755,7 @@ class HDFOutput(object):
         files = []
         for rank in range(MPI_size):
             basename = str(rank).zfill(len(str(MPI_size))) + '.h5'
-            f = h5py.File(os.path.join(directory, basename))
+            f = h5py.File(os.path.join(directory, basename), 'r')
             psi_dataset = f['psi']
             start_x = f['MPI_geometry']['first_x_index'][0]
             start_y = f['MPI_geometry']['first_y_index'][0]
