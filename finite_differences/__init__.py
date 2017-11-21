@@ -1,13 +1,25 @@
 import sys
 import os
 import shutil
+from distutils.sysconfig import get_config_var
+
 from mpi4py import MPI
 
 
 this_folder = os.path.dirname(os.path.abspath(__file__))
+
+
+
+
 extension_name = '_finite_differences'
 extension_pyx = os.path.join(this_folder, extension_name + '.pyx')
-extension_so = os.path.join(this_folder, extension_name + '.so')
+extension_so = os.path.join(this_folder, extension_name)
+ext_suffix = get_config_var('EXT_SUFFIX')
+if ext_suffix is not None:
+    extension_so += ext_suffix
+else:
+    extension_so += '.so'
+
 extension_c = os.path.join(this_folder, extension_name + '.c')
 
 def compile_extension():

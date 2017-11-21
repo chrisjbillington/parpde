@@ -1,6 +1,6 @@
 from __future__ import division, print_function
 import numpy as np
-from parPDE import HDFOutput, format_float
+from .parPDE import HDFOutput, format_float
 
 
 class BEC2D(object):

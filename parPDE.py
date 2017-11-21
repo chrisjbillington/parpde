@@ -6,7 +6,7 @@ import enum
 import numpy as np
 from mpi4py import MPI
 import h5py
-from finite_differences import SOR_step, apply_operator
+from .finite_differences import SOR_step, apply_operator
 from scipy.fftpack import fft2, ifft2
 
 
@@ -404,7 +404,7 @@ class Simulator2D(object):
     def successive_overrelaxation(self, system, psi, boundary_mask=None, relaxation_parameter=1.7, convergence=1e-13,
                                    output_interval=100, output_callback=None, post_step_callback=None,
                                    convergence_check_interval=10):
-        """Solve a system of equations A*psi=b using sucessive oberrelaxation.
+        """Solve a system of equations A*psi=b using sucessive overrelaxation.
         The provided function for the system of equations should accept psi
         and return the diagonal part of A as an array, the non-diagonal part
         of A as an OperatorSum instance, and b as an array. This function
