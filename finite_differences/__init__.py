@@ -1,14 +1,22 @@
 import sys
 import os
 import shutil
+from distutils.sysconfig import get_config_var
 from mpi4py import MPI
 
 
 this_folder = os.path.dirname(os.path.abspath(__file__))
 extension_name = '_finite_differences'
 extension_pyx = os.path.join(this_folder, extension_name + '.pyx')
-extension_so = os.path.join(this_folder, extension_name + '.so')
 extension_c = os.path.join(this_folder, extension_name + '.c')
+
+extension_so = os.path.join(this_folder, extension_name)
+ext_suffix = get_config_var('EXT_SUFFIX')
+if ext_suffix is not None:
+    extension_so += ext_suffix
+else:
+    extension_so += '.so'
+
 
 def compile_extension():
     # Compile the Cython extension. Only one MPI process should do this!
@@ -27,6 +35,8 @@ def compile_extension():
 if not os.path.exists(extension_so) or os.path.getmtime(extension_so) < os.path.getmtime(extension_pyx):
     compile_extension()
 
+MPI.COMM_WORLD.Barrier()
+
 try:
     from ._finite_differences import SOR_step, apply_operator
 except ImportError:
@@ -38,5 +48,5 @@ except ImportError:
     compile_extension()
     from ._finite_differences import SOR_step, apply_operator
 
-MPI.COMM_WORLD.Barrier()
+
 
