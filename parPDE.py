@@ -601,7 +601,8 @@ class Simulator2D(object):
                      output_interval, output_callback, post_step_callback, estimate_error, method_order=4)
 
     def split_step(self, dt, t_final, nonlocal_operator, local_operator, psi,
-            output_interval=100, output_callback=None, post_step_callback=None, estimate_error=False):
+            output_interval=100, output_callback=None, post_step_callback=None,
+            estimate_error=False, method_order=2):
         """Split step method. Nonlocal_operator is an operator diagonal in
         Fourier space. It can be either an OperatorSum instance if it is just
         a sum of differential operators, or can be given as an array
@@ -630,7 +631,7 @@ class Simulator2D(object):
         # of the next (if they have the same dt), so we cache it:
         cached_local_unitary = {0: (None, None, None)}
 
-        def split_step_step(t, dt, psi):
+        def split_step_2nd_order_step(t, dt, psi):
             previous_t, previous_dt, previous_local_unitary = cached_local_unitary[0]
             if previous_t == t and previous_dt == dt:
                 local_unitary = previous_local_unitary
@@ -645,8 +646,23 @@ class Simulator2D(object):
             cached_local_unitary[0] = (t+dt, dt, local_unitary)
             psi[:] *= local_unitary
 
-        self._evolve(dt, t_final, psi, split_step_step,
-                     output_interval, output_callback, post_step_callback, estimate_error, method_order=2)
+        def split_step_4nd_order_step(t, dt, psi):
+            p = 1/(4 - 4**(1.0/3.0))
+            for subdt in [p * dt, p * dt, (1 - 4*p) * dt, p * dt, p * dt]:
+                split_step_2nd_order_step(t, subdt, psi)
+                t += subdt
+                
+        if method_order == 2:
+            step_func = split_step_2nd_order_step
+        elif method_order == 4:
+            step_func = split_step_4nd_order_step
+        else:
+            msg = "method_order must be 2 or 4, not %s" % str(method_order)
+            raise ValueError(msg)
+
+        self._evolve(dt, t_final, psi, step_func,
+                     output_interval, output_callback, post_step_callback,
+                     estimate_error, method_order=method_order)
 
     def rk4ip(self, dt, t_final, nonlocal_operator, local_operator, psi,
               output_interval=100, output_callback=None, post_step_callback=None, estimate_error=False):
@@ -746,7 +762,7 @@ class HDFOutput(object):
 
     @staticmethod
     def iterframes(directory, start=0, end=None, step=1, frames=None):
-        with h5py.File(os.path.join(directory, '0.h5')) as master_file:
+        with h5py.File(os.path.join(directory, '0.h5'), 'r') as master_file:
             MPI_size = master_file['MPI_geometry'].attrs['MPI_size']
             shape = master_file.attrs['global_shape']
             dtype = master_file['psi'].dtype
