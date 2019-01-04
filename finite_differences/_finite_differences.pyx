@@ -5,35 +5,35 @@ cimport cython
 import numpy as np
 
 ctypedef fused psi_t:
-    #double
+    double
     double complex
 
 ctypedef fused A_diag_t:
     double
-    #double complex
+    double complex
 
 ctypedef fused b_t:
-    #double
+    double
     double complex
 
 ctypedef fused gradx_coeff_t:
-    #double
+    double
     double complex
 
 ctypedef fused grady_coeff_t:
-    #double
+    double
     double complex
 
 ctypedef fused grad2x_coeff_t:
     double
-    #double complex
+    double complex
 
 ctypedef fused grad2y_coeff_t:
     double
-    #double complex
+    double complex
 
 cdef extern from "complex.h":
-     double cabs(double complex) nogil
+    double cabs(double complex) nogil
 
 
 # Constants for central finite differences:
