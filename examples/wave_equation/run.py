@@ -44,7 +44,8 @@ dy = simulator.dy
 c = np.full((nx, ny), c_vac)
 c[:, (y <= y_boundary).reshape(simulator.ny)] = n_med * c_vac
 
-# How long it takes the wave to move one gridpoint:
+# How long it takes the wave to move one gridpoint. Can use this to pick a sensible
+# timestep for rk4:
 propagation_timescale = dx / c_vac
 
 
@@ -101,7 +102,7 @@ if __name__ == '__main__':
         message = (
             f'step: {i}'
             + f' | t = {format_float(t, units="s")}'
-            + f' | step err: {step_err:.03E}' 
+            + f' | step err: {step_err:.03E}'
             + f' | time per step: {format_float(time_per_step, units="s")}'
         )
         if not simulator.MPI_rank:  # Ensure only one process (rank 0) prints
@@ -118,12 +119,3 @@ if __name__ == '__main__':
         post_step_callback=None,
         estimate_error=True,
     )
-
-    # Close the output file (would happen automaticall at process shutdown, but the
-    # plotting process needs to open it, so we'll close it manually):
-    hdf_output.file.close()
-
-    # Run the plotting script:
-    if not simulator.MPI_rank:  # Ensure only one process (rank 0) runs the script
-        import subprocess
-        subprocess.call(['python', 'plot.py'])
