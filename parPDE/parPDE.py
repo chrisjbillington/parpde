@@ -295,14 +295,20 @@ class Simulator2D(object):
         MPI.Prequest.Waitall(self.pending_requests)
         self.pending_requests = None
 
+    def par_sum(self, psi):
+        """Sum the given field over all MPI processes"""
+        local_sum = np.asarray(psi.sum())
+        result = np.zeros_like(local_sum)
+        self.MPI_comm.Allreduce(local_sum, result, MPI.SUM)
+        return result
+
     def par_vdot(self, psi1, psi2):
         """"Dots two vectors (with complex comjucation of the first) and sums
         result over MPI processes"""
-        local_dot = np.vdot(psi1, psi2)
-        local_dot = np.asarray(local_dot, dtype=np.complex128).reshape(1)
-        result = np.zeros(1, dtype=np.complex128)
+        local_dot = np.asarray(np.vdot(psi1, psi2))
+        result = np.zeros_like(local_dot)
         self.MPI_comm.Allreduce(local_dot, result, MPI.SUM)
-        return result[0]
+        return result
 
     def par_operator_init(self, operator, psi, out=None):
         self.MPI_send_at_edges(psi)
@@ -499,12 +505,9 @@ class Simulator2D(object):
                     dt = dt_unmodified
                 if error_check_substep == n_errcheck_substeps + 1:
                     # Ok, we've completed the normal sized step. Compare wavefunctions:
-                    local_sum_squared_error = (np.abs(psi - psi_accurate)**2).sum()
-                    local_sum_squared_error = np.asarray(local_sum_squared_error).reshape(1)
-                    total_sum_squared_error = np.zeros(1)
-                    self.MPI_comm.Allreduce(local_sum_squared_error, total_sum_squared_error, MPI.SUM)
+                    sum_squared_error = self.par_sum(np.abs(psi - psi_accurate)**2)
                     psi_norm = self.par_vdot(psi_accurate, psi_accurate).real
-                    step_error = np.sqrt(total_sum_squared_error/psi_norm)
+                    step_error = np.sqrt(sum_squared_error/psi_norm)
                     # Finished checking error.
                     error_check_substep = None
                     # The missed increment of i from the normal sized
@@ -745,8 +748,8 @@ class HDFOutput(object):
 
     def save(self, psi, output_log_data, flush=True):
         if not 'psi' in self.file:
-            self.file.create_dataset('psi', (0,) + self.simulator.shape,
-                                     maxshape=(None,) + self.simulator.shape,
+            self.file.create_dataset('psi', (0,) + psi.shape[:-2] + self.simulator.shape,
+                                     maxshape=(None,) + psi.shape[:-2] + self.simulator.shape,
                                      dtype=psi.dtype)
         if not 'output_log' in self.file:
             self.file.create_dataset('output_log', (0,), maxshape=(None,), dtype=output_log_data.dtype)
@@ -764,8 +767,10 @@ class HDFOutput(object):
     def iterframes(directory, start=0, end=None, step=1, frames=None):
         with h5py.File(os.path.join(directory, '0.h5'), 'r') as master_file:
             MPI_size = master_file['MPI_geometry'].attrs['MPI_size']
-            shape = master_file.attrs['global_shape']
+            global_shape = master_file.attrs['global_shape']
+            psi_other_dims = master_file['psi'].shape[1:-2]
             dtype = master_file['psi'].dtype
+            psi_global_shape = tuple(psi_other_dims) + tuple(global_shape)
             if end is None:
                 end = len(master_file['psi'])
         files = []
@@ -780,9 +785,9 @@ class HDFOutput(object):
             files.append((f, psi_dataset, start_x, start_y, nx, ny))
 
         for i in frames if frames is not None else range(start, end, step):
-            psi = np.zeros(shape, dtype=dtype)
+            psi = np.zeros(psi_global_shape, dtype=dtype)
             for f, psi_dataset, start_x, start_y, nx, ny in files:
-                psi[start_x:start_x + nx, start_y:start_y + ny] = psi_dataset[i]
+                psi[..., start_x:start_x + nx, start_y:start_y + ny] = psi_dataset[i]
             yield i, psi
 
 
