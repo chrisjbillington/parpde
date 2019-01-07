@@ -17,7 +17,7 @@ from distutils.extension import Extension
 from Cython.Distutils import build_ext
 
 
-VERSION = '1.0.0'
+VERSION = '1.0.1'
 
 # Auto generate a __version__ package for the package to import
 with open(os.path.join('parPDE', '__version__.py'), 'w') as f:
