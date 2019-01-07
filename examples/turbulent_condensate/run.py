@@ -7,12 +7,12 @@
 
 from __future__ import division, print_function
 import sys
-sys.path.insert(0, '../..') # The location of the modules we need to import
+# sys.path.insert(0, '../..') # The location of the modules we need to import
 
 import numpy as np
 
 from parPDE import Simulator2D, LAPLACIAN
-from BEC2D import BEC2D
+from parPDE.BEC2D import BEC2D
 
 
 def get_number_and_trap(rhomax, R):

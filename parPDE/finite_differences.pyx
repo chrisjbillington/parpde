@@ -1,5 +1,4 @@
-from __future__ import print_function
-
+# cython: language_level=3
 
 cimport cython
 import numpy as np

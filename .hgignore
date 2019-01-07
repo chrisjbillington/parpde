@@ -5,3 +5,6 @@ syntax: glob
 terminal output/*
 *.html
 *.so
+build/*
+*.c
+parPDE/__version__.py

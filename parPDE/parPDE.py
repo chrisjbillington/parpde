@@ -6,7 +6,7 @@ import enum
 import numpy as np
 from mpi4py import MPI
 import h5py
-from finite_differences import SOR_step, apply_operator
+from .finite_differences import SOR_step, apply_operator
 from scipy.fftpack import fft2, ifft2
 
 
