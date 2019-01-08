@@ -380,7 +380,7 @@ class Simulator2D(object):
         elif not isinstance(operator, np.ndarray):
             raise TypeError(operator)
         result = ifft2(operator*fft2(psi))
-        if psi.dtype == np.float64 and all(op.dtype == np.float64 for op in operator.values()):
+        if psi.dtype == np.float64:
             result = result.real
         return result
 

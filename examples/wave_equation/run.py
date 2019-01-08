@@ -55,11 +55,11 @@ def dpsi_dt(t, psi):
     """The differential equation for our vector psi, which contains the wavefield u and
     its first derivative, du_dt"""
 
-    # Extract u and du_dt from X:
+    # Extract u and du_dt from psi:
     u = psi[0]
     du_dt = psi[1]
 
-    # Construct the output array dX_dt, containing the time derivatives of the input
+    # Construct the output array dpsi_dt, containing the time derivatives of the input
     # array:
     dpsi_dt = np.empty_like(psi)
 
