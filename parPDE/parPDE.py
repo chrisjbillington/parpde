@@ -161,7 +161,7 @@ class Simulator2D(object):
         self.x = np.linspace(self.x_min, self.x_max, self.nx).reshape((self.nx, 1))
         self.y = np.linspace(self.y_min, self.y_max, self.ny).reshape((1, self.ny))
 
-        self.kx = self.ky = self.f_gradx = self.grady = self.grad2x = self.grad2y = self.f_laplacian = None
+        self.kx = self.ky = self.f_gradx = self.f_grady = self.f_grad2x = self.f_grad2y = self.f_laplacian = None
         if self.MPI_size_x == 1:
             # For FFTs, which can be done only on a single node in periodic directions:
             if periodic_x:
