@@ -50,6 +50,17 @@ c[:, (y <= y_boundary).reshape(simulator.ny)] =  c_vac / n_med
 # timestep for rk4:
 propagation_timescale = dx / c_vac
 
+sigma_absorbing = 1
+
+Gamma = 4 * c_vac / sigma_absorbing
+
+# The envelope for the absorbing_boundary condittions:
+absorbing_envelope = (
+    np.exp((x - x_max_global) / sigma_absorbing)
+    + np.exp(-(x + x_max_global) / sigma_absorbing ** 2)
+    + np.exp((y - y_max_global) / sigma_absorbing ** 2)
+    + np.exp(-(y + y_max_global) / sigma_absorbing ** 2)
+)
 
 def dpsi_dt(t, psi):
     """The differential equation for our vector psi, which contains the wavefield u and
@@ -64,7 +75,7 @@ def dpsi_dt(t, psi):
     dpsi_dt = np.empty_like(psi)
 
     # du_dt:
-    dpsi_dt[0] = du_dt
+    dpsi_dt[0] = du_dt# - Gamma * absorbing_envelope * u
     # d2u_dt2:
     dpsi_dt[1] = c ** 2 * simulator.par_operator(LAPLACIAN, u)
 

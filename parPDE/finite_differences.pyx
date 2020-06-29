@@ -35,27 +35,62 @@ cdef extern from "complex.h":
     double cabs(double complex) nogil
 
 
-# Constants for central finite differences:
+# Constants for central finite differences.
+
+# 2nd order central finite differences for first derivative:
 DEF D_2ND_ORDER_1 = 1.0/2.0
 
+# 4th order central finite differences for first derivative:
 DEF D_4TH_ORDER_1 = 2.0/3.0
 DEF D_4TH_ORDER_2 = -1.0/12.0
 
+# 6th order central finite differences for first derivative:
 DEF D_6TH_ORDER_1 = 3.0/4.0
 DEF D_6TH_ORDER_2 = -3.0/20.0
 DEF D_6TH_ORDER_3 = 1.0/60.0
 
+# 2nd order central finite differences for second derivative:
 DEF D2_2ND_ORDER_0 = -2.0
 DEF D2_2ND_ORDER_1 = 1.0
 
+# 4th order central finite differences for second derivative:
 DEF D2_4TH_ORDER_0 = -5.0/2.0
 DEF D2_4TH_ORDER_1 = 4.0/3.0
 DEF D2_4TH_ORDER_2 = -1.0/12.0
 
+# 6th order central finite differences for first derivative:
 DEF D2_6TH_ORDER_0 = -49.0/18.0
 DEF D2_6TH_ORDER_1 = 3.0/2.0
 DEF D2_6TH_ORDER_2 = -3.0/20.0
 DEF D2_6TH_ORDER_3 = 1.0/90.0
+
+
+# Constants for non-central finite differences, used at free boundaries.
+
+# 2nd order noncentral finite differences for first derivative:
+
+# At the leftmost point of the three considered:
+DEF D_2ND_ORDER_0_0 = -3.0/2.0
+DEF D_2ND_ORDER_0_p1 = 2.0
+DEF D_2ND_ORDER_0_p2 = -1.0/2.0
+
+# At the rightmost point of the three considered:
+DEF D_2ND_ORDER_2_m2 = 1.0/2.0
+DEF D_2ND_ORDER_2_m1 = -2.0
+DEF D_2ND_ORDER_2_0 = 3.0/2.0
+
+# 4th order central finite differences for first derivative:
+
+# At the leftmost point of the four considered:
+DEF D_4TH_ORDER_0_0 = -3.0/2.0
+DEF D_4TH_ORDER_0_p1 = 2.0
+DEF D_4TH_ORDER_0_p2 = -1.0/2.0
+DEF D_4TH_ORDER_0_p3 = -1.0/2.0
+
+# At the rightmost point of the three considered:
+DEF D_2ND_ORDER_2_m2 = 1.0/2.0
+DEF D_2ND_ORDER_2_m1 = -2.0
+DEF D_2ND_ORDER_2_0 = 3.0/2.0
 
 
 @cython.initializedcheck(False)

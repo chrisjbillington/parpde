@@ -27,7 +27,7 @@ def format_float(x, sigfigs=4, units=''):
         exponent = 0
 
     significand = x / 10 ** exponent
-    pre_decimal, post_decimal = divmod(significand, 1)
+    pre_decimal, _ = divmod(significand, 1)
     digits = sigfigs - len(str(int(pre_decimal)))
     significand = round(significand, digits)
     result = '%.0{}f'.format(digits) % significand
@@ -125,6 +125,32 @@ def get_best_2D_segmentation(size_x, size_y, N_segments):
     return best_n_segments_x, best_n_segments_y
 
 
+def polyextrap_matrix(x_in, x_out):
+    """For N points x_in, and M points x_out, construct an NxM matrix that when
+    multiplied by the corresponding points y_in, returns interpolated/extrapolated
+    values y_out according to the order N-1 polynomial passing through the set of points
+    (x_in, y_in)."""
+    N = len(x_in)
+    M = len(x_out)
+
+    # A contains powers of x_in such that A*coeffs = y_in. Find A inverse, it is the
+    # matrix that returns the coefficients of the interpolating polynomial
+    A = np.empty((N, N))
+    for i in range(N):
+        for j in range(N):
+            A[i, j] = x_in[i]**j
+    A_inv = np.linalg.inv(A)
+
+    # B contains powers of x_out such that B*coeffs = y_out:
+    B = np.empty((M, N))
+    for i in range(M):
+        for j in range(N):
+            B[i, j] = x_out[i]**j
+
+    return B @ A_inv
+
+
+
 class Simulator2D(object):
     def __init__(self, x_min_global, x_max_global, y_min_global, y_max_global, nx_global, ny_global,
                  periodic_x=False, periodic_y=False, operator_order=4):
@@ -143,6 +169,16 @@ class Simulator2D(object):
         if not self.operator_order in [2, 4, 6]:
             msg = "Only differential operators of order 2, 4, 6 supported."
             raise ValueError(msg)
+        
+        self.extrap_p = polyextrap_matrix(
+            range(self.n_edge_pts + 1),
+            range(self.n_edge_pts + 1, 2 * self.n_edge_pts + 1),
+        )
+        self.extrap_m = polyextrap_matrix(
+            range(self.n_edge_pts + 1),
+            range(-self.n_edge_pts, 0),
+        )
+
         self.global_shape = (self.nx_global, self.ny_global)
 
         self._setup_MPI_grid()
@@ -162,7 +198,7 @@ class Simulator2D(object):
         self.y = np.linspace(self.y_min, self.y_max, self.ny).reshape((1, self.ny))
 
         self.kx = self.ky = self.f_gradx = self.f_grady = self.f_grad2x = self.f_grad2y = self.f_laplacian = None
-        if self.MPI_size_x == 1:
+        if self.MPI_size == 1:
             # For FFTs, which can be done only on a single node in periodic directions:
             if periodic_x:
                 self.kx = 2 * np.pi * np.fft.fftfreq(self.nx, d=self.dx).reshape((self.nx, 1))
@@ -328,6 +364,7 @@ class Simulator2D(object):
         grad2y_coeff = operator.get(Operators.GRAD2Y, None)
         left_buffer, right_buffer, bottom_buffer, top_buffer = self.MPI_receive_buffers[psi.dtype.type]
         self.MPI_receive_at_edges()
+        # self.impose_boundary_conditions(psi)
         return apply_operator(psi, gradx_coeff, grady_coeff, grad2x_coeff, grad2y_coeff,
                               self.dx,  self.dy, self.operator_order, out=out,
                               left_buffer=left_buffer, right_buffer=right_buffer,
@@ -369,6 +406,26 @@ class Simulator2D(object):
         if grad2y_coeff is not None:
             f_operator = f_operator + grad2y_coeff * self.f_grad2y
         return f_operator
+
+    # def impose_boundary_conditions(self, psi):
+    #     left_buffer, right_buffer, bottom_buffer, top_buffer = self.MPI_receive_buffers[psi.dtype.type]
+    #     left_send_buffer, *_ = self.MPI_send_buffers[psi.dtype.type]
+
+    #     # Extrapolate at the left edge:
+    #     if self.MPI_x_coord == 0:
+    #         left_buffer[:] = np.einsum('ij,jy->iy', self.extrap_m, psi[:self.n_edge_pts+1, :])
+
+        # Apply boundary conditions if not periodic:
+        # if not self.periodic_x:
+        #     # Extrapolate at the right edge
+        #     right_buffer[:] = np.einsum('ij,jy->iy', self.extrap_p, psi[-self.n_edge_pts-1:, :])
+        #     # Extrapolate at the left edge
+        #     left_buffer[:] = np.einsum('ij,jy->iy', self.extrap_m, psi[:self.n_edge_pts+1, :])
+        # if not self.periodic_y:
+        #     # Extrapolate at the top edge
+        #     top_buffer[:] = np.einsum('ij,xj->xi', self.extrap_p, psi[:, -self.n_edge_pts-1:])
+        #     # Extrapolate at the bottom edge
+        #     bottom_buffer[:] = np.einsum('ij,xj->xi', self.extrap_m, psi[:, :self.n_edge_pts+1])
 
     def apply_fourier_operator(self, operator, psi):
         """Applies an operator in the Fourier basis. If operator provided is
@@ -446,6 +503,7 @@ class Simulator2D(object):
                                      interior=True, edges=False, boundary_mask=boundary_mask)
 
             self.MPI_receive_at_edges()
+            # self.impose_boundary_conditions(psi)
             left_buffer, right_buffer, bottom_buffer, top_buffer = self.MPI_receive_buffers[psi.dtype.type]
 
             squared_error = SOR_step(psi, A_diag, gradx_coeff, grady_coeff, grad2x_coeff, grad2y_coeff, b,
@@ -760,7 +818,7 @@ class HDFOutput(object):
         psi_dataset = self.file['psi']
         psi_dataset.resize((len(psi_dataset) + 1,) + psi_dataset.shape[1:])
         psi_dataset[-1] = psi
-        if self.flush_output:
+        if self.flush_output or flush:
             self.file.flush()
 
     @staticmethod
